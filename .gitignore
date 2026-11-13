@@ -13,12 +13,12 @@
 *.obj
 *.o
 
-# --- Recompiled game code (GENERATED from your own copy of the game) ---
+# --- Recompiled game code (GENERATED from the game files you supply) ---
 # Produced by `rexglue codegen` from the manifest + your XEX. Not committed:
 # it is derived from copyrighted game code. Regenerate it locally — see README.
 /generated/
 
-# --- Game files: provide your OWN legally-owned copy of GoldenEye 007 ---
+# --- Game files: supplied by you, never committed ---
 # (the XEX + extracted assets go in assets/). Never committed.
 /assets/*
 !/assets/.gitkeep

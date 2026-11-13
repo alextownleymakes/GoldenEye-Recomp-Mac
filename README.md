@@ -10,7 +10,7 @@ The original's features carry over: keyboard and mouse, online multiplayer, grap
 * **Unlimited sprint (mod).** Press **L3** (or **Shift**) to sprint; it stays on until you press it again or stop moving. **R3** still crouches. Switch to hold-to-sprint under **Controls → Sprint Mode** in the pause menu.
 * **A Windows build script (untested).** See [Building for Windows](#building-for-windows-untested).
 
-No game files are included. You need your own copy of GoldenEye 007 for Xbox 360 (XBLA).
+No game files are included or linked. You must supply the GoldenEye 007 Xbox 360 (XBLA) game files yourself.
 
 ---
 
@@ -151,7 +151,7 @@ Options (PowerShell): `-Config RelWithDebInfo`, `-SdkDir <path>`, `-Clean`, for 
 
 ## Legal
 
-This repository does not contain any game assets, game code, ROMs, XEX files, textures, audio, or other copyrighted material. You must provide your own legally obtained copy of the game. Don't share built copies of `GoldenEye.app`, because the game files are inside it.
+This repository does not contain any game assets, game code, ROMs, XEX files, textures, audio, or other copyrighted material. You must supply the game files yourself; none are included or linked here. Don't share built copies of `GoldenEye.app` or the `GoldenEye-Windows` folder, because the game files are inside them.
 
 ## License
 

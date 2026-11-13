@@ -6,7 +6,7 @@ This folder turns the project into a native macOS app (`GoldenEye.app`) for Appl
 
 * macOS 14 or newer, with the **Xcode 16+ Command Line Tools** (`xcode-select --install`). The full Xcode app isn't required.
 * **Homebrew**, used for `cmake` and `ninja`. The script installs them if they're missing.
-* Your own GoldenEye 007 (XBLA) game. Either copy the packed download (the single extensionless file, e.g. `30BA9271…`) into `assets/`, or pass its path to the script; it gets unpacked automatically. Already-unpacked files (`assets/default.xex` + data) work too.
+* The GoldenEye 007 (XBLA) game files, which you supply yourself. Either copy the packed download (the single extensionless file, e.g. `30BA9271…`) into `assets/`, or pass its path to the script; it gets unpacked automatically. Already-unpacked files (`assets/default.xex` + data) work too.
 * About **4–6 GB of free disk space** while building, plus an internet connection on the first run (the SDK and its dependencies are downloaded). Afterwards you can delete `macos/.deps/` and `out/` to get that space back; only `GoldenEye.app` is needed to play.
 
 ## Build

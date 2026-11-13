@@ -741,8 +741,10 @@ void ge_hook_830E0750(PPCRegister& r7, PPCRegister& r8, PPCRegister& r11,
 // user-facing sensitivity multiplier is ge_mouse_sens (defined below).
 REXCVAR_DEFINE_BOOL(ge_invert_x, false, "Input", "Invert mouse X (horizontal) look");
 REXCVAR_DEFINE_BOOL(ge_invert_y, false, "Input", "Invert mouse Y (vertical) look");
-REXCVAR_DEFINE_BOOL(ge_disable_autoaim, true, "Input",
-                    "Disable auto-aim and look-ahead while mouse-look is on");
+// Off by default: the game's own Auto-Aim option is respected. Set true to force
+// auto-aim off whenever mouse-look is on (it can fight direct mouse aiming).
+REXCVAR_DEFINE_BOOL(ge_disable_autoaim, false, "Input",
+                    "Force the game's auto-aim off while mouse-look is on");
 REXCVAR_DEFINE_DOUBLE(ge_menu_sensitivity, 1.0, "Input",
                       "Mouse sensitivity in menus").range(0.05, 20.0);
 REXCVAR_DEFINE_DOUBLE(ge_aim_turn_distance, 0.4, "Input",
