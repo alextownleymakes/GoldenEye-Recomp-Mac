@@ -14,13 +14,19 @@
 #include <rex/ui/window.h>
 #include <rex/ui/windowed_app_context.h>
 
+#include <cstdlib>
+#include <filesystem>
 #include <string>
+
+#if defined(__APPLE__)
+#include <rex/filesystem.h>
+#endif
 
 #include "ge_menu.h"
 #include "ge_postfx.h"
 
 // Relaunch the current executable as a fresh process (implemented in
-// ge_hooks.cpp, which owns the Win32 includes). Used by the ONLINE menu's
+// ge_hooks.cpp, which owns the platform includes). Used by the ONLINE menu's
 // "Save & Restart" so username/server/enable changes take effect on a clean
 // boot -- they are read at startup (UserProfile ctor, online client start).
 namespace ge {
@@ -31,6 +37,10 @@ void InitMouseLook();
 // Suppress mouse-look while the pause menu is open (cursor is needed for the
 // menu, and motion shouldn't turn into look). Implemented in ge_hooks.cpp.
 void SetMouselookSuppressed(bool suppressed);
+// macOS/Linux: listen for keyboard/mouse on the game window (Windows reads
+// input through Win32 directly, so these are no-ops there).
+void AttachInputWindow(rex::ui::Window* window);
+void DetachInputWindow();
 }
 
 class GeApp : public rex::ReXApp {
@@ -46,7 +56,40 @@ class GeApp : public rex::ReXApp {
   // GoldenEye boot defaults. Runs before the config file is loaded, so these
   // are just defaults -- ge.toml (written by the in-game menu) overrides them.
   void OnConfigurePaths(rex::PathConfig& paths) override {
+#if defined(__APPLE__)
+    // macOS app bundle (GoldenEye.app/Contents/MacOS/GoldenEye):
+    //  - game files: GoldenEye.app/Contents/Resources/assets (the build copies
+    //    them in), else an "assets" folder next to GoldenEye.app;
+    //  - settings: ~/Library/Application Support/GoldenEye/ge.toml, never inside
+    //    the bundle (it may be read-only, and writing there breaks its signature).
+    if (InAppBundle()) {
+      const std::filesystem::path contents = BundleContentsDir();
+      const std::filesystem::path beside_app = contents.parent_path().parent_path();
+      std::error_code ec;
+      if (paths.game_data_root.empty()) {
+        if (std::filesystem::is_directory(contents / "Resources" / "assets", ec)) {
+          paths.game_data_root = contents / "Resources" / "assets";
+        } else if (std::filesystem::is_directory(beside_app / "assets", ec)) {
+          paths.game_data_root = beside_app / "assets";
+        }
+      }
+      const std::filesystem::path support = MacSupportDir("Application Support");
+      if (!support.empty()) {
+        std::filesystem::create_directories(support, ec);
+        const std::filesystem::path cfg = support / "ge.toml";
+        // One-time carry-over of settings saved next to the app by older builds.
+        if (!std::filesystem::exists(cfg, ec) &&
+            std::filesystem::exists(beside_app / "ge.toml", ec)) {
+          std::filesystem::copy_file(beside_app / "ge.toml", cfg, ec);
+        }
+        paths.config_path = cfg;
+      } else {
+        paths.config_path = beside_app / "ge.toml";
+      }
+    }
+#else
     (void)paths;
+#endif
     // NOTE: vsync is NOT forced here. Its SDK default is false (off), so the
     // in-menu toggle persists: turning it ON differs from default -> written to
     // ge.toml; OFF == default -> not written but still boots off. Forcing it here
@@ -65,6 +108,26 @@ class GeApp : public rex::ReXApp {
     // it is never written here (writing default==default is a no-op anyway).
   }
 
+#if defined(__APPLE__)
+  // Logs go to ~/Library/Logs/GoldenEye (viewable in Console.app) instead of
+  // inside the app bundle.
+  void OnConfigureLogging(rex::LogConfig& config) override {
+    if (InAppBundle()) {
+      const std::filesystem::path logs = MacLibraryDir("Logs");
+      if (!logs.empty()) config.log_dir = logs;
+    }
+  }
+#endif
+
+  // ReXGlue 0.10+ loads the Xenos GPU as a plugin and leaves graphics off
+  // unless one is named. Default to it (a gpu_plugin set in ge.toml or on the
+  // command line still wins).
+  void OnPreSetup(rex::RuntimeConfig& config) override {
+    if (config.gpu_plugin.empty()) {
+      config.gpu_plugin = "xenos";
+    }
+  }
+
   // Register the ESC pause-menu keybind and create the always-on Post-FX
   // filter overlay once the ImGui drawer exists.
   void OnCreateDialogs(rex::ui::ImGuiDrawer* drawer) override {
@@ -74,6 +137,7 @@ class GeApp : public rex::ReXApp {
     if (window()) window()->SetTitle("GoldenEye");
     rex::ui::RegisterBind("bind_pause_menu", "Escape", "Pause menu",
                           [this] { TogglePauseMenu(); });
+    ge::AttachInputWindow(window());  // macOS/Linux keyboard + mouse events
     ge::InitMouseLook();  // start raw-mouse capture/look thread
     postfx_ = std::make_unique<ge::PostFxOverlay>(drawer);
     // Username/server are set in the ONLINE pause-menu tab now -- no first-boot
@@ -83,6 +147,7 @@ class GeApp : public rex::ReXApp {
   // Tear down the menu, overlay and keybind before the drawer is destroyed.
   void OnShutdown() override {
     rex::ui::UnregisterBind("bind_pause_menu");
+    ge::DetachInputWindow();
     if (menu_) {
       // Direct delete (not Close()) so we don't re-enter pause bookkeeping
       // during shutdown; removes itself from the drawer in its destructor.
@@ -93,6 +158,23 @@ class GeApp : public rex::ReXApp {
   }
 
  private:
+#if defined(__APPLE__)
+  static std::filesystem::path BundleContentsDir() {
+    return rex::filesystem::GetExecutableFolder().parent_path();
+  }
+  static bool InAppBundle() {
+    const std::filesystem::path exe_dir = rex::filesystem::GetExecutableFolder();
+    return exe_dir.filename() == "MacOS" && exe_dir.parent_path().filename() == "Contents";
+  }
+  // ~/Library/<sub>/GoldenEye, or empty if HOME is unset.
+  static std::filesystem::path MacLibraryDir(const char* sub) {
+    const char* home = std::getenv("HOME");
+    if (!home || !*home) return {};
+    return std::filesystem::path(home) / "Library" / sub / "GoldenEye";
+  }
+  static std::filesystem::path MacSupportDir(const char* sub) { return MacLibraryDir(sub); }
+#endif
+
   // ESC handler: open or close the menu. The game keeps running underneath.
   void TogglePauseMenu() {
     if (menu_) {

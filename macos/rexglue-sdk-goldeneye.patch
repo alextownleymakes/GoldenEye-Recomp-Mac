@@ -1,0 +1,3590 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index c9dfc17..05fc5a8 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -33,10 +33,14 @@ endif()
+ 
+ # Graphics backend selection
+ # D3D12: Windows only, ON by default.
+-# Vulkan: Cross-platform, ON by default on Linux, OFF by default on Windows.
++# Vulkan: Cross-platform. ON by default on BOTH Windows and Linux so the host
++# can pick the backend at runtime per GPU vendor (AMD -> Vulkan, others ->
++# D3D12). AMD's D3D12 driver path times out / black-screens on this title
++# (see GoldenEye-Recomp issues #18/#21/#22); Vulkan is the working path there,
++# mirroring Xenia. Building both lets a single binary serve every GPU.
+ if(WIN32)
+     option(REXGLUE_USE_D3D12  "Enable D3D12 graphics backend" ON)
+-    option(REXGLUE_USE_VULKAN "Enable Vulkan graphics backend" OFF)
++    option(REXGLUE_USE_VULKAN "Enable Vulkan graphics backend" ON)
+ else()
+     set(REXGLUE_USE_D3D12 OFF)
+     option(REXGLUE_USE_VULKAN "Enable Vulkan graphics backend" ON)
+@@ -254,6 +258,16 @@ add_compile_options(
+     -Wextra
+ )
+ 
++# x86-64 SIMD baseline for all rexglue (non-thirdparty) targets. Core/audio/
++# graphics use SSSE3 (_mm_shuffle_epi8) and AVX2 intrinsics. Declared here --
++# after thirdparty, before the src/* subdirs -- so the SDK builds correctly
++# when consumed via add_subdirectory() by a project whose preset doesn't pass
++# -march (matches the SDK's standalone preset, x86-64-v3). Scoped to rex
++# targets only; thirdparty keeps its own flags.
++if(CMAKE_SYSTEM_PROCESSOR MATCHES "AMD64|x86_64")
++    add_compile_options(-march=x86-64-v3)
++endif()
++
+ include_directories(${REXGLUE_ROOT}/include)
+ 
+ add_subdirectory(src/core)
+diff --git a/cmake/rexglue_helpers.cmake b/cmake/rexglue_helpers.cmake
+index 41e6dce..8dfbb98 100644
+--- a/cmake/rexglue_helpers.cmake
++++ b/cmake/rexglue_helpers.cmake
+@@ -81,6 +81,26 @@ function(rexglue_configure_target target_name)
+         ${REXGLUE_SHARE_DIR}/windowed_app_main_sdl.cpp
+         ${REXGLUE_SHARE_DIR}/rex_app.cpp)
+ 
++    # rex_app.cpp pulls in rexui PUBLIC headers (console/settings/debug overlays)
++    # that include imgui.h. imgui is linked PRIVATE by rexui (header+static, no
++    # DLL), so its include dir is not propagated transitively. When consuming the
++    # SDK as a source tree the imgui target exists -- add its include dir here
++    # since we just added rex_app.cpp. (For an installed SDK, imgui.h lives in the
++    # package include dir, already on the interface path.)
++    if(TARGET imgui)
++        target_include_directories(${target_name} PRIVATE
++            $<TARGET_PROPERTY:imgui,INTERFACE_INCLUDE_DIRECTORIES>)
++    endif()
++    # rex_app.cpp also needs the SDK's own headers, including the generated
++    # rex/version.h (configured into the SDK's binary include dir). rex::runtime
++    # is linked PRIVATE and does not re-export rexcore's include dirs, so add
++    # rexcore's interface includes (source include/ + generated build include/)
++    # directly. (For an installed SDK these headers are in the package include.)
++    if(TARGET rexcore)
++        target_include_directories(${target_name} PRIVATE
++            $<TARGET_PROPERTY:rexcore,INTERFACE_INCLUDE_DIRECTORIES>)
++    endif()
++
+     target_compile_definitions(${target_name} PRIVATE
+         REXGLUE_BUILD_CONFIG="$<CONFIG>")
+ 
+diff --git a/include/rex/gpu_stall_recovery.h b/include/rex/gpu_stall_recovery.h
+new file mode 100644
+index 0000000..33d3dcc
+--- /dev/null
++++ b/include/rex/gpu_stall_recovery.h
+@@ -0,0 +1,29 @@
++// GPU render-thread wakeup protection.
++//
++// GoldenEye's render thread sleeps on a guest event waiting for the GPU-
++// completion interrupt to wake it for the next batch of work. The interrupt
++// signals that event with KeSetEvent; the render thread, in its loop, calls
++// KeResetEvent on the same event. On the real console the fixed timing kept the
++// Set safely after the Reset. Under emulation the threads run on different host
++// cores at different speeds, so the Set can land just before the Reset -> the
++// Reset destroys it -> the render thread waits forever -> the ring drains and the
++// screen freezes while everything else keeps running (worse under load).
++//
++// Fix (see XEvent): an event that the GPU completion interrupt signals is marked
++// "render". A Set on a render event is remembered as pending; a Reset will NOT
++// drop a pending Set; only a successful Wait consumes it. So the completion
++// wakeup can never be lost -- no stall, no recovery, it just never goes missing.
++//
++// This file only brackets the guest interrupt handler so Sets made inside it can
++// be identified as render-thread wakeups.
++#pragma once
++
++namespace rex {
++namespace gpu_recovery {
++
++void EnterGpuIsr();
++void ExitGpuIsr();
++bool InGpuIsr();  // true while the guest GPU interrupt handler is running
++
++}  // namespace gpu_recovery
++}  // namespace rex
+diff --git a/include/rex/graphics/d3d12/command_processor.h b/include/rex/graphics/d3d12/command_processor.h
+index 96d362b..23e6717 100644
+--- a/include/rex/graphics/d3d12/command_processor.h
++++ b/include/rex/graphics/d3d12/command_processor.h
+@@ -582,6 +582,30 @@ class D3D12CommandProcessor : public CommandProcessor {
+   Microsoft::WRL::ComPtr<ID3D12PipelineState> apply_gamma_pwl_pipeline_;
+   Microsoft::WRL::ComPtr<ID3D12PipelineState> apply_gamma_pwl_fxaa_luma_pipeline_;
+ 
++  // ge colour-grade post-process (in-place on the guest output after gamma).
++  // Layout must match the cbuffer in ge_grade.cs.hlsl (scalars only, 12 dwords).
++  struct GradeConstants {
++    uint32_t size[2];
++    float brightness;
++    float contrast;
++    float saturation;
++    float vibrance;
++    float temperature;
++    float gamma;
++    float tint_r;
++    float tint_g;
++    float tint_b;
++    float tint_strength;
++  };
++  enum class GradeRootParameter : UINT {
++    kConstants,
++    kDestination,
++
++    kCount,
++  };
++  Microsoft::WRL::ComPtr<ID3D12RootSignature> grade_root_signature_;
++  Microsoft::WRL::ComPtr<ID3D12PipelineState> grade_pipeline_;
++
+   struct FxaaConstants {
+     uint32_t size[2];
+     float size_inv[2];
+diff --git a/include/rex/graphics/vulkan/command_processor.h b/include/rex/graphics/vulkan/command_processor.h
+index 696ff48..5a1cbc6 100644
+--- a/include/rex/graphics/vulkan/command_processor.h
++++ b/include/rex/graphics/vulkan/command_processor.h
+@@ -386,6 +386,21 @@ class VulkanCommandProcessor : public CommandProcessor {
+     uint32_t size[2];
+     float size_inv[2];
+   };
++  // ge colour-grade: SwapFxaaConstants followed by the grade parameters.
++  struct SwapGradeConstants {
++    uint32_t size[2];
++    float size_inv[2];
++    float brightness;
++    float contrast;
++    float saturation;
++    float vibrance;
++    float temperature;
++    float gamma;
++    float tint_r;
++    float tint_g;
++    float tint_b;
++    float tint_strength;
++  };
+ 
+   // Framebuffer for the current presenter's guest output image revision, and
+   // its usage tracking.
+@@ -666,6 +681,7 @@ class VulkanCommandProcessor : public CommandProcessor {
+   VkPipelineLayout swap_apply_gamma_pipeline_layout_ = VK_NULL_HANDLE;
+   VkPipelineLayout swap_apply_gamma_compute_pipeline_layout_ = VK_NULL_HANDLE;
+   VkPipelineLayout swap_fxaa_pipeline_layout_ = VK_NULL_HANDLE;
++  VkPipelineLayout swap_grade_pipeline_layout_ = VK_NULL_HANDLE;
+   // Has no dependencies on specific pipeline stages on both ends to simplify
+   // use in different scenarios with different pipelines - use explicit barriers
+   // for synchronization.
+@@ -686,6 +702,9 @@ class VulkanCommandProcessor : public CommandProcessor {
+   VkPipeline swap_apply_gamma_compute_pwl_fxaa_luma_rb_swap_pipeline_ = VK_NULL_HANDLE;
+   VkPipeline swap_fxaa_pipeline_ = VK_NULL_HANDLE;
+   VkPipeline swap_fxaa_extreme_pipeline_ = VK_NULL_HANDLE;
++  VkPipeline swap_grade_pipeline_ = VK_NULL_HANDLE;
++  VkPipeline swap_fxaa_grade_pipeline_ = VK_NULL_HANDLE;
++  VkPipeline swap_fxaa_extreme_grade_pipeline_ = VK_NULL_HANDLE;
+   VkPipelineLayout resolve_downscale_pipeline_layout_ = VK_NULL_HANDLE;
+   VkPipeline resolve_downscale_pipeline_ = VK_NULL_HANDLE;
+   VkBuffer resolve_downscale_buffer_ = VK_NULL_HANDLE;
+diff --git a/include/rex/logging/types.h b/include/rex/logging/types.h
+index 5cdf089..bd5bc80 100644
+--- a/include/rex/logging/types.h
++++ b/include/rex/logging/types.h
+@@ -80,6 +80,11 @@ struct LogConfig {
+   /** spdlog pattern string for the file sink. */
+   std::string file_pattern = "[%Y-%m-%d %H:%M:%S.%e] [%l] [%n] [t%t] %v";
+ 
++  /** Log through a background thread so game threads never block on the
++   *  file sink (GoldenEye fork; enabled by ReXApp). CLI tools keep this off:
++   *  they swap sinks at shutdown, which is unsafe with queued async messages. */
++  bool async = false;
++
+   /** Messages at or above this level trigger an immediate flush. */
+   spdlog::level::level_enum flush_level = spdlog::level::info;
+ 
+diff --git a/include/rex/rex_app.h b/include/rex/rex_app.h
+index 9672d33..5de89ab 100644
+--- a/include/rex/rex_app.h
++++ b/include/rex/rex_app.h
+@@ -264,6 +264,9 @@ class ReXApp : public ui::WindowedApp, public ui::WindowListener, public ui::Win
+   /// Set a callback that provides guest frame stats to the debug overlay.
+   void SetGuestFrameStats(ui::DebugOverlayDialog::FrameStatsProvider provider);
+ 
++  /// Persist current cvar values to the app config file (e.g. ge.toml).
++  void PersistConfig();
++
+  private:
+   std::function<void(PathConfig)> MakeResumeCallback();
+ 
+diff --git a/include/rex/system/kernel_state.h b/include/rex/system/kernel_state.h
+index 9b9cf9e..2b06a03 100644
+--- a/include/rex/system/kernel_state.h
++++ b/include/rex/system/kernel_state.h
+@@ -204,6 +204,10 @@ class KernelState {
+   // Access must be guarded by the global critical region.
+   util::ObjectTable* object_table() { return &object_table_; }
+ 
++  // Debug pause (F1): host-suspends all guest threads to freeze the game on the
++  // current frame, or resumes them. Returns the new paused state.
++  bool ToggleGuestPause();
++
+   uint32_t process_type() const;
+   void set_process_type(uint32_t value);
+   uint32_t process_info_block_address() const {
+diff --git a/include/rex/system/xam/user_profile.h b/include/rex/system/xam/user_profile.h
+index ec37017..f3d5479 100644
+--- a/include/rex/system/xam/user_profile.h
++++ b/include/rex/system/xam/user_profile.h
+@@ -218,6 +218,7 @@ class UserProfile {
+ 
+   uint64_t xuid() const { return xuid_; }
+   std::string name() const { return name_; }
++  void set_name(const std::string& n) { name_ = n.substr(0, 15); }  // gamertag max 15
+   uint32_t signin_state() const { return 1; }
+   uint32_t type() const { return 1 | 2; /* local | online profile? */ }
+ 
+diff --git a/include/rex/system/xevent.h b/include/rex/system/xevent.h
+index e81df52..76c32c9 100644
+--- a/include/rex/system/xevent.h
++++ b/include/rex/system/xevent.h
+@@ -10,6 +10,8 @@
+  * @modified    Tom Clay, 2026 - Adapted for ReXGlue runtime
+  */
+ 
++#include <atomic>
++
+ #include <rex/system/xobject.h>
+ #include <rex/system/xtypes.h>
+ #include <rex/thread.h>
+@@ -42,12 +44,27 @@ class XEvent : public XObject {
+   bool Save(stream::ByteStream* stream) override;
+   static object_ref<XEvent> Restore(KernelState* kernel_state, stream::ByteStream* stream);
+ 
++  // Mark this as an event the GPU completion interrupt signals the render thread
++  // with. Once marked, a Set is held "pending" until a Wait consumes it, so a
++  // racing guest KeResetEvent can't drop the wakeup (see Set / Reset). Without
++  // this, that race makes the render thread hang forever -> visual freeze.
++  void MarkRenderEvent() { is_render_.store(true, std::memory_order_relaxed); }
++
+  protected:
+   rex::thread::WaitHandle* GetWaitHandle() override { return event_.get(); }
++  // Fires on a successful wait: the waiter received the signal, so a pending
++  // render Set is now delivered and can be cleared.
++  void WaitCallback() override;
+ 
+  private:
++  // Write the signalled state (1/0) into the guest KEVENT header so guest code
++  // that reads Header.SignalState directly sees the truth.
++  void SetGuestSignalState(uint32_t state);
++
+   bool manual_reset_ = false;
+   std::unique_ptr<rex::thread::Event> event_;
++  std::atomic<bool> is_render_{false};       // GPU-completion wakeup event
++  std::atomic<bool> render_pending_{false};  // a render Set awaits a Wait to consume it
+ };
+ 
+ }  // namespace rex::system
+diff --git a/resources/templates/codegen/init_cpp.inja b/resources/templates/codegen/init_cpp.inja
+index 1be4759..0d3e207 100644
+--- a/resources/templates/codegen/init_cpp.inja
++++ b/resources/templates/codegen/init_cpp.inja
+@@ -30,6 +30,6 @@ const rex::PPCImageInfo PPCImageConfig = {
+ };
+ 
+ PPCFuncMapping PPCFuncMappings[] = {
+-{% for fn in functions %}{% if not fn.below_code_base or fn.is_import %}	{ {{ fn.address }}, {{ fn.name }} },
++{% for fn in functions %}{% if not fn.out_of_code_range or fn.is_import %}	{ {{ fn.address }}, {{ fn.name }} },
+ {% endif %}{% endfor %}	{ 0, nullptr }
+ };
+diff --git a/resources/templates/codegen/register_cpp.inja b/resources/templates/codegen/register_cpp.inja
+index 0be31c4..2833e57 100644
+--- a/resources/templates/codegen/register_cpp.inja
++++ b/resources/templates/codegen/register_cpp.inja
+@@ -17,7 +17,7 @@ void ReXModule_Register(rex::runtime::IModuleRegistrar* registrar) {
+ {% else %}
+ void {{ project }}_RegisterFunctions(rex::runtime::IModuleRegistrar* registrar) {
+ {% endif %}
+-{% for fn in functions %}{% if not fn.below_code_base or fn.is_import %}  registrar->SetFunction({{ fn.address }}, {{ fn.name }});
++{% for fn in functions %}{% if not fn.out_of_code_range or fn.is_import %}  registrar->SetFunction({{ fn.address }}, {{ fn.name }});
+ {% endif %}{% endfor %}}
+ 
+ {% if is_dll %}
+diff --git a/resources/templates/init/rexglue_cmake.inja b/resources/templates/init/rexglue_cmake.inja
+index 97796d9..87cc75b 100644
+--- a/resources/templates/init/rexglue_cmake.inja
++++ b/resources/templates/init/rexglue_cmake.inja
+@@ -32,6 +32,11 @@ if(NOT DEFINED REXGLUE_HOST_TARGET)
+     set(REXGLUE_HOST_TARGET {{ cmake_var("PROJECT_NAME") }})
+ endif()
+ 
++# Extra command-line arguments for 'rexglue codegen' (a CMake list), e.g.
++#   set(REXGLUE_CODEGEN_ARGS --max_jump_table_entries 2048)
++# before include(generated/rexglue.cmake).
++set(REXGLUE_CODEGEN_ARGS "" CACHE STRING "Extra arguments passed to 'rexglue codegen'")
++
+ set(REXGLUE_RECOMP_DEBUG_INFO "line-tables-only" CACHE STRING
+     "Debug info level for generated code: line-tables-only, full, or none")
+ 
+@@ -117,7 +122,7 @@ endmacro()
+ add_custom_command(
+     OUTPUT "{{ cmake_var("CMAKE_CURRENT_SOURCE_DIR") }}/{{ entrypoint_out_dir }}/codegen.build.stamp"
+            {{ cmake_var("REXGLUE_ENTRYPOINT_GENERATED_SOURCES") }}
+-    COMMAND $<TARGET_FILE:rex::rexglue> codegen {{ cmake_var("CMAKE_CURRENT_SOURCE_DIR") }}/{{ names.original }}_manifest.toml
++    COMMAND $<TARGET_FILE:rex::rexglue> codegen {{ cmake_var("REXGLUE_CODEGEN_ARGS") }} {{ cmake_var("CMAKE_CURRENT_SOURCE_DIR") }}/{{ names.original }}_manifest.toml
+     DEPFILE "{{ cmake_var("CMAKE_CURRENT_SOURCE_DIR") }}/{{ entrypoint_out_dir }}/codegen.d"
+     WORKING_DIRECTORY {{ cmake_var("CMAKE_CURRENT_SOURCE_DIR") }}
+     COMMENT "Generating recompiled code for {{ names.original }}"
+diff --git a/src/audio/sdl/sdl_audio_driver.cpp b/src/audio/sdl/sdl_audio_driver.cpp
+index 20a2cd8..c7e914f 100644
+--- a/src/audio/sdl/sdl_audio_driver.cpp
++++ b/src/audio/sdl/sdl_audio_driver.cpp
+@@ -26,6 +26,13 @@
+ 
+ REXCVAR_DEFINE_BOOL(audio_mute, false, "Audio", "Mute audio output");
+ 
++// Master output gain applied to every mixed frame just before it reaches the
++// device. 1.0 = unity (no cost -- the scaling loop is skipped). Hot-reloadable
++// so the in-game volume slider takes effect immediately.
++REXCVAR_DEFINE_DOUBLE(master_volume, 1.0, "Audio",
++                      "Master output volume (0.0 = silent, 1.0 = full)")
++    .range(0.0, 1.0);
++
+ namespace rex::audio::sdl {
+ 
+ SDLAudioDriver::SDLAudioDriver(memory::Memory* memory, rex::thread::Semaphore* semaphore)
+@@ -211,6 +218,15 @@ void SDLAudioDriver::SDLCallback(void* userdata, SDL_AudioStream* stream, int ad
+             assert_unhandled_case(driver->sdl_device_channels_);
+             break;
+         }
++        // Master volume: linear gain on the interleaved output, applied just
++        // before the frame reaches the device. Unity (1.0) is the common case
++        // and skips the loop entirely.
++        const float volume = static_cast<float>(std::clamp(REXCVAR_GET(master_volume), 0.0, 1.0));
++        if (volume != 1.0f) {
++          for (int i = 0; i < sample_count; ++i) {
++            data[i] *= volume;
++          }
++        }
+       }
+       if (!SDL_PutAudioStreamData(stream, data, len)) {
+         REXAPU_ERROR("SDL_PutAudioStreamData() failed: {}", SDL_GetError());
+diff --git a/src/codegen/builders.h b/src/codegen/builders.h
+index 24894f2..2b5aff9 100644
+--- a/src/codegen/builders.h
++++ b/src/codegen/builders.h
+@@ -162,6 +162,7 @@ bool build_srw(BuilderContext& ctx);
+ 
+ // Unconditional branch
+ bool build_b(BuilderContext& ctx);
++bool build_bc(BuilderContext& ctx);
+ bool build_bl(BuilderContext& ctx);
+ bool build_blr(BuilderContext& ctx);
+ bool build_blrl(BuilderContext& ctx);
+diff --git a/src/codegen/builders/control_flow.cpp b/src/codegen/builders/control_flow.cpp
+index 26957fc..3d824ab 100644
+--- a/src/codegen/builders/control_flow.cpp
++++ b/src/codegen/builders/control_flow.cpp
+@@ -12,6 +12,8 @@
+ #include "builder_context.h"
+ #include "helpers.h"
+ 
++#include <string>
++
+ #include <fmt/format.h>
+ 
+ #include <rex/logging.h>
+@@ -91,6 +93,61 @@ bool build_bl(BuilderContext& ctx) {
+   return true;
+ }
+ 
++// Generic conditional branch `bc BO,BI,target` (relative/absolute, no link).
++// The disassembler only emits this when no simplified mnemonic (beq/bge/bdnz/...)
++// applies -- e.g. BO=20 (branch-always) written explicitly, or rare BO/BI combos.
++// operands: [0]=BO, [1]=BI, [2]=target.
++bool build_bc(BuilderContext& ctx) {
++  uint32_t bo = ctx.insn.operands[0];
++  uint32_t bi = ctx.insn.operands[1];
++  uint32_t target = ctx.insn.operands[2];
++
++  const bool dont_decrement_ctr = (bo >> 2) & 1;  // BO2: 1 = skip CTR
++  const bool dont_test_cond = (bo >> 4) & 1;       // BO0: 1 = ignore CR
++  const bool cond_value = (bo >> 3) & 1;           // BO1: branch if CR[BI]==BO1
++  const bool ctr_zero_test = (bo >> 1) & 1;        // BO3: 1 = branch if CTR==0
++
++  std::string cond;
++  auto add_cond = [&](const std::string& c) {
++    if (!cond.empty())
++      cond += " && ";
++    cond += c;
++  };
++
++  if (!dont_decrement_ctr) {
++    ctx.println("\t--{}.u64;", ctx.ctr());
++    add_cond(fmt::format("{}.u32 {} 0", ctx.ctr(), ctr_zero_test ? "==" : "!="));
++  }
++  if (!dont_test_cond) {
++    add_cond(fmt::format("{}{}.{}", cond_value ? "" : "!", ctx.cr(bi / 4), crBitName(bi)));
++  }
++
++  auto kind = ctx.graph().classifyTarget(target, ctx.base, false);
++  bool internal = kind == TargetKind::InternalLabel ||
++                  (kind == TargetKind::Unknown && target >= ctx.fn.base() && target < ctx.fn.end());
++
++  if (cond.empty()) {
++    // Unconditional (BO ignores CR and CTR) -- mirror build_b.
++    if (internal) {
++      ctx.println("\tgoto loc_{:X};", target);
++    } else {
++      ctx.emit_function_call(target);
++      ctx.println("\treturn;");
++    }
++    return true;
++  }
++
++  if (internal) {
++    ctx.println("\tif ({}) goto loc_{:X};", cond, target);
++  } else {
++    ctx.println("\tif ({}) {{", cond);
++    ctx.emit_function_call(target);
++    ctx.println("\t\treturn;");
++    ctx.println("\t}}");
++  }
++  return true;
++}
++
+ bool build_blr(BuilderContext& ctx) {
+   ctx.println("\treturn;");
+   return true;
+diff --git a/src/codegen/builders/system.cpp b/src/codegen/builders/system.cpp
+index f560429..932d00b 100644
+--- a/src/codegen/builders/system.cpp
++++ b/src/codegen/builders/system.cpp
+@@ -261,9 +261,14 @@ bool build_mflr(BuilderContext& ctx) {
+ 
+ bool build_mfmsr(BuilderContext& ctx) {
+   if (!ctx.config().skipMsr) {
+-    // Check global lock and return appropriate value
+-    // Returns 0x8000 if unlocked (interrupts enabled), 0 if locked
+-    ctx.println("\t{}.u64 = REX_CHECK_GLOBAL_LOCK();", ctx.r(ctx.insn.operands[0]));
++    // Read the interrupt-enable (EE) bit from THIS thread's own MSR (ctx.msr).
++    // Was REX_CHECK_GLOBAL_LOCK(), which locked the process-global recursive_mutex
++    // merely to read the interrupt state -- that coupled every guest "disable
++    // interrupts" (used around lock-free spinlocks, e.g. the GPU render worker's)
++    // to the GPU interrupt handler, which holds the same mutex for its whole body,
++    // producing a cross-thread lock convoy that drained the GPU ring and froze the
++    // screen under load. The EE bit lives in ctx.msr per thread, so read it direct.
++    ctx.println("\t{}.u64 = ctx.msr;", ctx.r(ctx.insn.operands[0]));
+   }
+   return true;
+ }
+@@ -327,18 +332,14 @@ bool build_mtlr(BuilderContext& ctx) {
+ 
+ bool build_mtmsrd(BuilderContext& ctx) {
+   if (!ctx.config().skipMsr) {
+-    // Update MSR bits
++    // GoldenEye fork: per-thread MSR update + full fence instead of the
++    // process-global REX_ENTER/LEAVE_GLOBAL_LOCK. The global lock made the GPU
++    // render worker convoy on the mutex the GPU interrupt handler holds,
++    // draining the command ring and freezing the screen under load. lwarx/stwcx
++    // emulation already provides the atomicity the guest needs.
++    ctx.println("\tstd::atomic_thread_fence(std::memory_order_seq_cst);");
+     ctx.println("\tctx.msr = ({}.u32 & 0x8020) | (ctx.msr & ~0x8020);",
+                 ctx.r(ctx.insn.operands[0]));
+-    // Global lock mechanism:
+-    // R13 = enter lock (disable interrupts)
+-    // Other = leave lock (enable interrupts)
+-    uint32_t src_reg = ctx.insn.operands[0];
+-    if (src_reg == 13) {
+-      ctx.println("\tREX_ENTER_GLOBAL_LOCK();");
+-    } else {
+-      ctx.println("\tREX_LEAVE_GLOBAL_LOCK();");
+-    }
+   }
+   return true;
+ }
+diff --git a/src/codegen/codegen_writer.cpp b/src/codegen/codegen_writer.cpp
+index a0484fb..fdbd4e0 100644
+--- a/src/codegen/codegen_writer.cpp
++++ b/src/codegen/codegen_writer.cpp
+@@ -75,6 +75,11 @@ nlohmann::json buildTemplateData(const rex::codegen::CodegenContext& ctx,
+         {"name", funcName},
+         {"is_rexcrt", isRexcrt},
+         {"below_code_base", (fn->base() < codeMin)},
++        // Stubs for synthetic targets outside the module's executable range
++        // (e.g. tail-call branches into zero-filled regions past the last
++        // section). They exist as host functions for direct calls but cannot be
++        // registered in the guest->host dispatch table, which would reject them.
++        {"out_of_code_range", (fn->base() < codeMin || fn->base() >= codeMax)},
+         {"is_import", fn->authority() == rex::codegen::FunctionAuthority::IMPORT},
+     });
+   }
+diff --git a/src/codegen/instruction_dispatch.cpp b/src/codegen/instruction_dispatch.cpp
+index 40ae269..016c47d 100644
+--- a/src/codegen/instruction_dispatch.cpp
++++ b/src/codegen/instruction_dispatch.cpp
+@@ -131,6 +131,7 @@ static const std::unordered_map<int, Builder>& GetDispatchTable() {
+       // Control Flow
+       //=====================================================================
+       {PPC_INST_B, build_b},
++      {PPC_INST_BC, build_bc},
+       {PPC_INST_BL, build_bl},
+       {PPC_INST_BLR, build_blr},
+       {PPC_INST_BLRL, build_blrl},
+diff --git a/src/core/clock.cpp b/src/core/clock.cpp
+index ae72b7a..237315f 100644
+--- a/src/core/clock.cpp
++++ b/src/core/clock.cpp
+@@ -10,6 +10,7 @@
+  */
+ 
+ #include <algorithm>
++#include <atomic>
+ #include <limits>
+ #include <mutex>
+ 
+@@ -17,7 +18,12 @@
+ #include <rex/cvar.h>
+ #include <rex/math.h>
+ 
+-REXCVAR_DEFINE_BOOL(clock_no_scaling, false, "Clock",
++// Default ON: clock scaling takes a global mutex (UpdateGuestClock) on every
++// guest timebase read. The GoldenEye GPU-completion hook reads the timebase in
++// a tight spin, so with scaling enabled that mutex is contended by dozens of
++// threads to a standstill (a hard freeze). The no-scaling path computes the
++// guest tick lock-free, which removes the freeze.
++REXCVAR_DEFINE_BOOL(clock_no_scaling, true, "Clock",
+                     "Disable clock scaling (inverted: false = scaling enabled)");
+ 
+ REXCVAR_DEFINE_BOOL(clock_source_raw, false, "Clock", "Use raw clock source without scaling");
+@@ -36,7 +42,8 @@ uint64_t guest_system_time_base_ = Clock::QueryHostSystemTime();
+ std::pair<uint64_t, uint64_t> guest_tick_ratio_ = std::make_pair(1, 1);
+ 
+ // Native guest ticks.
+-uint64_t last_guest_tick_count_ = 0;
++// Atomic so the contended path can read it lock-free (see UpdateGuestClock).
++std::atomic<uint64_t> last_guest_tick_count_{0};
+ // Last sampled host tick count.
+ uint64_t last_host_tick_count_ = Clock::QueryHostTickCount();
+ // Mutex to ensure last_host_tick_count_ and last_guest_tick_count_ are in sync
+@@ -61,31 +68,25 @@ void RecomputeGuestTickScalar() {
+   guest_tick_ratio_ = frac;
+ }
+ 
+-// Update the guest timer for all threads.
+-// Return a copy of the value so locking is reduced.
++// Update the guest timer for all threads. Lock-free.
++//
++// The guest clock is a PURE function of the host clock: guest = host * ratio.
++// The previous design accumulated deltas under a global mutex. The guest's
++// frame-limiter is a tight spin-wait that reads the timebase (mftb -> this)
++// millions of times/sec; whenever a caller was preempted while holding that
++// mutex, NO thread could advance the clock, so the spin never reached its target
++// time and looped forever -> intermittent visual freeze (audio/input keep running
++// on other threads; worse at higher fps because the spin hammers harder). Removing
++// the lock removes the failure mode entirely -- there is no holder to stall.
++// 128-bit intermediate avoids overflow and integer-division truncation.
+ uint64_t UpdateGuestClock() {
+   uint64_t host_tick_count = Clock::QueryHostTickCount();
+-
+-  if (REXCVAR_GET(clock_no_scaling)) {
+-    // Nothing to update, calculate on the fly
+-    return host_tick_count * guest_tick_ratio_.first / guest_tick_ratio_.second;
+-  }
+-
+-  std::unique_lock<std::mutex> lock(tick_mutex_, std::defer_lock);
+-  if (lock.try_lock()) {
+-    // Translate host tick count to guest tick count.
+-    uint64_t host_tick_delta =
+-        host_tick_count > last_host_tick_count_ ? host_tick_count - last_host_tick_count_ : 0;
+-    last_host_tick_count_ = host_tick_count;
+-    uint64_t guest_tick_delta =
+-        host_tick_delta * guest_tick_ratio_.first / guest_tick_ratio_.second;
+-    last_guest_tick_count_ += guest_tick_delta;
+-    return last_guest_tick_count_;
+-  } else {
+-    // Wait until another thread has finished updating the clock.
+-    lock.lock();
+-    return last_guest_tick_count_;
+-  }
++  // guest_tick_ratio_ is (re)computed at startup / on a scalar change; a racy copy
++  // here is benign (worst case: one tick read straddles a rare ratio change). The
++  // ratio is reduced (small numerator), so host_tick_count * first does not
++  // overflow for millennia of uptime. Identical math to the clock_no_scaling path.
++  auto ratio = guest_tick_ratio_;
++  return host_tick_count * ratio.first / ratio.second;
+ }
+ 
+ // Offset of the current guest system file time relative to the guest base time.
+diff --git a/src/core/logging.cpp b/src/core/logging.cpp
+index e8de147..b2ec2fe 100644
+--- a/src/core/logging.cpp
++++ b/src/core/logging.cpp
+@@ -14,9 +14,11 @@
+ #include <charconv>
+ #include <filesystem>
+ #include <map>
++#include <cstdlib>
+ #include <mutex>
+ #include <optional>
+ #include <string_view>
++#include <spdlog/async.h>
+ #include <unordered_map>
+ #include <vector>
+ 
+@@ -173,10 +175,24 @@ spdlog::level::level_enum ResolveCategoryLevel(const std::string& name) {
+   return g_config.default_level;
+ }
+ 
++// When true (after the thread pool is up), category loggers are created async:
++// callers enqueue formatted messages and return immediately, so no game thread
++// ever blocks on the shared file-sink mutex during write/flush/rotation. This
++// removes the multi-threaded log contention that could stall the render thread
++// mid-frame (intermittent freeze with audio still running).
++bool g_async_ready = false;
++
+ // Create a logger and register it
+ std::shared_ptr<spdlog::logger> CreateCategoryLogger(const std::string& name) {
+   auto sinks = BuildCategorySinks(name);
+-  auto logger = std::make_shared<spdlog::logger>(name, sinks.begin(), sinks.end());
++  std::shared_ptr<spdlog::logger> logger;
++  if (g_async_ready) {
++    logger = std::make_shared<spdlog::async_logger>(name, sinks.begin(), sinks.end(),
++                                                    spdlog::thread_pool(),
++                                                    spdlog::async_overflow_policy::overrun_oldest);
++  } else {
++    logger = std::make_shared<spdlog::logger>(name, sinks.begin(), sinks.end());
++  }
+   logger->set_level(ResolveCategoryLevel(name));
+   logger->flush_on(g_config.flush_level);
+   spdlog::register_logger(logger);
+@@ -276,6 +292,18 @@ void InitLogging(const LogConfig& config) {
+ 
+   g_extra_sinks = config.extra_sinks;
+ 
++  // Bring up the async logging thread pool (idempotent) so the loggers rebuilt
++  // below are async: the file sink's mutex (write/flush/rotation) is then only
++  // touched by the single background worker, never by the game/render threads.
++  if (config.async && !g_async_ready) {
++    spdlog::init_thread_pool(8192, 1);
++    g_async_ready = true;
++    // Drain and stop the async worker before static destruction. Otherwise it
++    // can still be writing a queued message while the sinks are torn down at
++    // process exit ("pure virtual method called" -> abort on quit).
++    std::atexit([] { spdlog::shutdown(); });
++  }
++
+   // Rebuild all loggers with new sinks
+   for (auto& entry : g_registry) {
+     if (entry.name.empty())
+diff --git a/src/graphics/command_processor.cpp b/src/graphics/command_processor.cpp
+index a744375..6311e35 100644
+--- a/src/graphics/command_processor.cpp
++++ b/src/graphics/command_processor.cpp
+@@ -35,7 +35,22 @@
+ #include <rex/system/kernel_state.h>
+ #include <rex/system/user_module.h>
+ 
+-REXCVAR_DEFINE_BOOL(vsync, true, "GPU", "Enable vertical sync");
++// GoldenEye: default OFF. SaveConfig only writes cvars that differ from their
++// default, so the default MUST match the game's shipped state (off) for the
++// in-menu toggle to persist in ge.toml (turning it ON now differs from default
++// -> written; turning it OFF == default -> not written but boots off anyway).
++REXCVAR_DEFINE_BOOL(vsync, false, "GPU", "Enable vertical sync");
++
++// GoldenEye GPU throttle. The game's GPU command-submit chain is self-feeding
++// (each command buffer's kickoff enqueues the next when replayed); under the
++// emulator the GPU side outruns the render thread, the kickoff fires with no
++// next buffer, the chain dies, and the screen freezes. Pausing the CP worker a
++// little after each ring drain holds the GPU back so the render stays ahead and
++// the chain survives. Tune live in the .toml (ge_gpu_throttle_us = N); 0 = off.
++REXCVAR_DEFINE_INT32(ge_gpu_throttle_us, 120, "GPU",
++                     "GoldenEye: microseconds to pause the CP worker after each ring drain so the "
++                     "emulated GPU cannot outrun the render thread (0 = off)")
++    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+ 
+ REXCVAR_DEFINE_BOOL(clear_memory_page_state, true, "GPU",
+                     "Refresh page-valid state from GPU-written memory at frame end. "
+@@ -74,7 +89,16 @@ REXCVAR_DEFINE_INT32(query_occlusion_fake_sample_count, 1000, "GPU",
+     .range(1, 100000)
+     .lifecycle(rex::cvar::Lifecycle::kHotReload);
+ 
+-REXCVAR_DEFINE_BOOL(async_shader_compilation, true, "GPU",
++// GoldenEye macOS port: off by default on macOS. With MoltenVK some pipelines
++// never leave the async placeholder state, and (with
++// vulkan_async_skip_incomplete_frames) every in-level frame was dropped -> black
++// screen with audio still playing.
++#if defined(__APPLE__)
++#define GE_ASYNC_SHADERS_DEFAULT false
++#else
++#define GE_ASYNC_SHADERS_DEFAULT true
++#endif
++REXCVAR_DEFINE_BOOL(async_shader_compilation, GE_ASYNC_SHADERS_DEFAULT, "GPU",
+                     "Compile shaders and create pipelines asynchronously in background "
+                     "threads. This reduces stutter but may cause brief visual artifacts while "
+                     "pipelines are being prepared.")
+@@ -248,6 +272,14 @@ void CommandProcessor::WorkerThreadMain() {
+                                        read_ptr_index_);
+     }
+ 
++    // GoldenEye GPU throttle: pause briefly after draining so the emulated GPU
++    // can't outrun the render thread (keeps the self-feeding GPU command chain
++    // alive -> no freeze). Tunable live via ge_gpu_throttle_us.
++    int32_t ge_throttle_us = REXCVAR_GET(ge_gpu_throttle_us);
++    if (ge_throttle_us > 0) {
++      rex::thread::Sleep(std::chrono::microseconds(ge_throttle_us));
++    }
++
+     // FIXME: We're supposed to process the WAIT_UNTIL register at this point,
+     // but no games seem to actually use it.
+   }
+@@ -332,6 +364,7 @@ void CommandProcessor::UpdateWritePointer(uint32_t value) {
+   write_ptr_index_event_->Set();
+ }
+ 
++
+ uint32_t CommandProcessor::ReadRegisterValue(uint32_t index) const {
+   if (index < RegisterFile::kRegisterCount) {
+     return register_file_->values[index];
+@@ -989,6 +1022,18 @@ bool CommandProcessor::ExecutePacketType3_WAIT_REG_MEM(memory::RingBuffer* reade
+ 
+   bool is_memory = (wait_info & 0x10) != 0;
+ 
++  // Deadlock breaker: a WAIT_REG_MEM polls a fence the guest CPU is expected to
++  // write. If that CPU thread is itself parked waiting on GPU completion (the
++  // GoldenEye GPU-completion spin), neither side moves and this loop never
++  // exits -> the CP worker hangs here forever and every guest thread waiting on
++  // the ring freezes (audio survives on its own thread). Cap the wait: after a
++  // generous wall-clock budget (far above any real per-frame fence latency)
++  // give up and proceed, which lets the CP advance, the guest wait clear, and
++  // the CPU resume and write the fence. Worst case is a one-frame artifact, not
++  // a hard freeze.
++  const auto wait_deadline =
++      std::chrono::steady_clock::now() + std::chrono::milliseconds(60);
++
+   bool matched = false;
+   do {
+     uint32_t value = 0;
+@@ -1030,6 +1075,13 @@ bool CommandProcessor::ExecutePacketType3_WAIT_REG_MEM(memory::RingBuffer* reade
+         break;
+     }
+     if (!matched) {
++      if (std::chrono::steady_clock::now() >= wait_deadline) {
++        REXGPU_WARN(
++            "WAIT_REG_MEM stalled >60ms (poll={:08X} ref={:08X} mask={:08X} op={}); proceeding to "
++            "avoid a CPU/GPU sync deadlock",
++            poll_reg_addr, ref, mask, wait_info & 0x7);
++        break;
++      }
+       // Wait.
+       if (wait >= 0x100) {
+         PrepareForWait();
+@@ -1037,7 +1089,12 @@ bool CommandProcessor::ExecutePacketType3_WAIT_REG_MEM(memory::RingBuffer* reade
+           // User wants it fast and dangerous.
+           rex::thread::MaybeYield();
+         } else {
+-          rex::thread::Sleep(std::chrono::milliseconds(wait / 0x100));
++          // Cap the poll interval. The packet's `wait` field can encode a huge
++          // delay (wait/0x100 ms = many minutes/hours); sleeping that long in
++          // one shot means the loop never re-checks the value OR the deadline
++          // above, so a stuck fence hangs the CP worker forever. Poll at most
++          // every 1ms so progress + the timeout are actually observed.
++          rex::thread::Sleep(std::chrono::milliseconds(std::min<uint32_t>(wait / 0x100, 1u)));
+         }
+         rex::thread::SyncMemory();
+         ReturnFromWait();
+diff --git a/src/graphics/d3d12/command_processor.cpp b/src/graphics/d3d12/command_processor.cpp
+index 19874a5..f797ba1 100644
+--- a/src/graphics/d3d12/command_processor.cpp
++++ b/src/graphics/d3d12/command_processor.cpp
+@@ -57,6 +57,7 @@ namespace shaders {
+ #include "../shaders/bytecode/d3d12_5_1/apply_gamma_table_fxaa_luma_cs.h"
+ #include "../shaders/bytecode/d3d12_5_1/fxaa_cs.h"
+ #include "../shaders/bytecode/d3d12_5_1/fxaa_extreme_cs.h"
++#include "../shaders/bytecode/d3d12_5_1/ge_grade_cs.h"
+ #include "../shaders/bytecode/d3d12_5_1/resolve_downscale_cs.h"
+ }  // namespace shaders
+ 
+@@ -1342,6 +1343,67 @@ bool D3D12CommandProcessor::SetupContext() {
+     return false;
+   }
+ 
++  // ge colour-grade post-process pipeline. Entirely OPTIONAL: if anything here
++  // fails (or the GPU can't typed-UAV-load R10G10B10A2), the grade is simply
++  // disabled -- never fail CP init over it.
++  {
++    D3D12_ROOT_PARAMETER grade_root_parameters[UINT(GradeRootParameter::kCount)];
++    {
++      D3D12_ROOT_PARAMETER& p = grade_root_parameters[UINT(GradeRootParameter::kConstants)];
++      p.ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
++      p.Constants.ShaderRegister = 0;
++      p.Constants.RegisterSpace = 0;
++      p.Constants.Num32BitValues = sizeof(GradeConstants) / sizeof(uint32_t);
++      p.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
++    }
++    D3D12_DESCRIPTOR_RANGE grade_range_dest;
++    grade_range_dest.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
++    grade_range_dest.NumDescriptors = 1;
++    grade_range_dest.BaseShaderRegister = 0;
++    grade_range_dest.RegisterSpace = 0;
++    grade_range_dest.OffsetInDescriptorsFromTableStart = 0;
++    {
++      D3D12_ROOT_PARAMETER& p = grade_root_parameters[UINT(GradeRootParameter::kDestination)];
++      p.ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
++      p.DescriptorTable.NumDescriptorRanges = 1;
++      p.DescriptorTable.pDescriptorRanges = &grade_range_dest;
++      p.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
++    }
++    D3D12_ROOT_SIGNATURE_DESC grade_root_signature_desc;
++    grade_root_signature_desc.NumParameters = UINT(GradeRootParameter::kCount);
++    grade_root_signature_desc.pParameters = grade_root_parameters;
++    grade_root_signature_desc.NumStaticSamplers = 0;
++    grade_root_signature_desc.pStaticSamplers = nullptr;
++    grade_root_signature_desc.Flags = D3D12_ROOT_SIGNATURE_FLAG_NONE;
++    *(grade_root_signature_.ReleaseAndGetAddressOf()) =
++        ui::d3d12::util::CreateRootSignature(provider, grade_root_signature_desc);
++    if (grade_root_signature_) {
++      *(grade_pipeline_.ReleaseAndGetAddressOf()) = ui::d3d12::util::CreateComputePipeline(
++          device, shaders::ge_grade_cs, sizeof(shaders::ge_grade_cs), grade_root_signature_.Get());
++      // The in-place grade reads the destination, so the guest-output format
++      // must support typed UAV loads.
++      bool typed_uav_load = false;
++      D3D12_FEATURE_DATA_D3D12_OPTIONS options = {};
++      if (SUCCEEDED(device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS, &options,
++                                                sizeof(options))) &&
++          options.TypedUAVLoadAdditionalFormats) {
++        D3D12_FEATURE_DATA_FORMAT_SUPPORT fs = {};
++        fs.Format = ui::d3d12::D3D12Presenter::kGuestOutputFormat;
++        if (SUCCEEDED(device->CheckFeatureSupport(D3D12_FEATURE_FORMAT_SUPPORT, &fs, sizeof(fs))) &&
++            (fs.Support2 & D3D12_FORMAT_SUPPORT2_UAV_TYPED_LOAD)) {
++          typed_uav_load = true;
++        }
++      }
++      if (!grade_pipeline_ || !typed_uav_load) {
++        if (!typed_uav_load) {
++          REXGPU_WARN("ge: post-fx colour grade disabled (GPU lacks R10G10B10A2 typed UAV load)");
++        }
++        grade_pipeline_.Reset();
++        grade_root_signature_.Reset();
++      }
++    }
++  }
++
+   // Initialize compute pipelines for post-processing anti-aliasing.
+   D3D12_ROOT_PARAMETER fxaa_root_parameters[UINT(FxaaRootParameter::kCount)];
+   {
+@@ -1688,6 +1750,8 @@ void D3D12CommandProcessor::ShutdownContext() {
+   resolve_downscale_pipeline_.Reset();
+   resolve_downscale_root_signature_.Reset();
+ 
++  grade_pipeline_.Reset();
++  grade_root_signature_.Reset();
+   apply_gamma_pwl_fxaa_luma_pipeline_.Reset();
+   apply_gamma_pwl_pipeline_.Reset();
+   apply_gamma_table_fxaa_luma_pipeline_.Reset();
+@@ -2088,11 +2152,18 @@ void D3D12CommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontbu
+                               : gamma_ramp_256_entry_table_up_to_date_) = true;
+         }
+ 
+-        // Destination, source, and if bindful, gamma ramp.
+-        ui::d3d12::util::DescriptorCpuGpuHandlePair apply_gamma_descriptors[3];
++        // Destination, source, and if bindful, gamma ramp -- plus one extra slot
++        // for the ge colour-grade pass when enabled. All requested in ONE call so
++        // they share a descriptor heap; requesting more later could change the
++        // heap mid-swap (forbidden below) and corrupt the bound descriptors.
++        const bool grade_enabled =
++            grade_pipeline_ && rex::cvar::GetFlagByName("postfx_enabled") == "true";
++        const uint32_t apply_gamma_descriptor_count = bindless_resources_used_ ? 2u : 3u;
++        const uint32_t grade_descriptor_index = apply_gamma_descriptor_count;
++        ui::d3d12::util::DescriptorCpuGpuHandlePair apply_gamma_descriptors[4];
+         ui::d3d12::util::DescriptorCpuGpuHandlePair apply_gamma_descriptor_gamma_ramp;
+-        if (!RequestOneUseSingleViewDescriptors(bindless_resources_used_ ? 2 : 3,
+-                                                apply_gamma_descriptors)) {
++        if (!RequestOneUseSingleViewDescriptors(
++                apply_gamma_descriptor_count + (grade_enabled ? 1u : 0u), apply_gamma_descriptors)) {
+           return false;
+         }
+         // Must not call anything that can change the descriptor heap from now
+@@ -2243,6 +2314,56 @@ void D3D12CommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontbu
+                                 apply_gamma_dest_initial_state);
+         }
+ 
++        // ge colour-grade post-process: an in-place compute pass over the final
++        // guest output. Gated on the postfx cvar and GPU support, so the default
++        // path is byte-for-byte unchanged when off. guest_output_resource is in
++        // kGuestOutputInternalState at this point (both branches above).
++        if (grade_enabled) {
++          auto grade_f = [](const char* name, float def) {
++            std::string v = rex::cvar::GetFlagByName(name);
++            return v.empty() ? def : float(std::atof(v.c_str()));
++          };
++          const ui::d3d12::util::DescriptorCpuGpuHandlePair& grade_descriptor =
++              apply_gamma_descriptors[grade_descriptor_index];
++          {
++            PushTransitionBarrier(guest_output_resource,
++                                  ui::d3d12::D3D12Presenter::kGuestOutputInternalState,
++                                  D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
++            D3D12_UNORDERED_ACCESS_VIEW_DESC grade_uav_desc;
++            grade_uav_desc.Format = ui::d3d12::D3D12Presenter::kGuestOutputFormat;
++            grade_uav_desc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
++            grade_uav_desc.Texture2D.MipSlice = 0;
++            grade_uav_desc.Texture2D.PlaneSlice = 0;
++            device->CreateUnorderedAccessView(guest_output_resource, nullptr, &grade_uav_desc,
++                                              grade_descriptor.first);
++            deferred_command_list_.D3DSetComputeRootSignature(grade_root_signature_.Get());
++            GradeConstants grade_constants;
++            grade_constants.size[0] = guest_output_width;
++            grade_constants.size[1] = guest_output_height;
++            grade_constants.brightness = grade_f("postfx_brightness", 0.0f);
++            grade_constants.contrast = grade_f("postfx_contrast", 1.0f);
++            grade_constants.saturation = grade_f("postfx_saturation", 1.0f);
++            grade_constants.vibrance = grade_f("postfx_vibrance", 0.0f);
++            grade_constants.temperature = grade_f("postfx_temperature", 0.0f);
++            grade_constants.gamma = grade_f("postfx_gamma", 1.0f);
++            grade_constants.tint_r = grade_f("postfx_tint_r", 1.0f);
++            grade_constants.tint_g = grade_f("postfx_tint_g", 1.0f);
++            grade_constants.tint_b = grade_f("postfx_tint_b", 1.0f);
++            grade_constants.tint_strength = grade_f("postfx_tint", 0.0f);
++            deferred_command_list_.D3DSetComputeRoot32BitConstants(
++                UINT(GradeRootParameter::kConstants), sizeof(grade_constants) / sizeof(uint32_t),
++                &grade_constants, 0);
++            deferred_command_list_.D3DSetComputeRootDescriptorTable(
++                UINT(GradeRootParameter::kDestination), grade_descriptor.second);
++            SetExternalPipeline(grade_pipeline_.Get());
++            SubmitBarriers();
++            deferred_command_list_.D3DDispatch((guest_output_width + 7) / 8,
++                                               (guest_output_height + 7) / 8, 1);
++            PushTransitionBarrier(guest_output_resource, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
++                                  ui::d3d12::D3D12Presenter::kGuestOutputInternalState);
++          }
++        }
++
+         // Need to submit all the commands before giving the image back to the
+         // presenter so it can submit its own commands for displaying it to the
+         // queue.
+@@ -2880,8 +3001,9 @@ bool D3D12CommandProcessor::IssueCopy() {
+   ReadbackResolveMode readback_mode = GetReadbackResolveMode(REXCVAR_GET(d3d12_readback_resolve));
+   if (readback_mode == ReadbackResolveMode::kDisabled) {
+     uint32_t written_address, written_length;
+-    return render_target_cache_->Resolve(*memory_, *shared_memory_, *texture_cache_,
+-                                         written_address, written_length);
++    bool ok = render_target_cache_->Resolve(*memory_, *shared_memory_, *texture_cache_,
++                                            written_address, written_length);
++    return ok;
+   }
+   return IssueCopy_ReadbackResolvePath();
+ }
+diff --git a/src/graphics/graphics_system.cpp b/src/graphics/graphics_system.cpp
+index 8f2fcb0..786524c 100644
+--- a/src/graphics/graphics_system.cpp
++++ b/src/graphics/graphics_system.cpp
+@@ -20,6 +20,7 @@
+ #include <utility>
+ 
+ #include <rex/cvar.h>
++#include <rex/gpu_stall_recovery.h>
+ #include <rex/graphics/command_processor.h>
+ #include <rex/graphics/flags.h>
+ #include <rex/kernel/xboxkrnl/video.h>
+@@ -31,14 +32,22 @@
+ #include <rex/ui/window.h>
+ #include <rex/ui/windowed_app_context.h>
+ 
++// Live-changeable: the swap path reads swap_post_effect_actual_ each present and
++// both FXAA pipelines are built at init, so switching is just a state swap. The
++// vsync worker re-applies this cvar each tick (SetDesiredSwapPostEffect no-ops
++// when unchanged), so menu changes take effect with no restart.
+ REXCVAR_DEFINE_STRING(swap_post_effect, "none", "GPU", "Swap post effect: none, fxaa, fxaa_extreme")
+     .allowed({"none", "fxaa", "fxaa_extreme"})
+-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
++    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+ 
+ REXCVAR_DEFINE_BOOL(store_shaders, true, "GPU",
+                     "Store shaders persistently and load them when loading games to avoid "
+                     "runtime spikes and freezes when playing the game not for the first time.");
+ 
++REXCVAR_DEFINE_INT32(max_fps, 0, "GPU",
++                     "Frame rate cap in Hz when vsync is off (0 = uncapped)")
++    .range(0, 1000);
++
+ namespace {
+ 
+ rex::graphics::CommandProcessor::SwapPostEffect ParseSwapPostEffect(
+@@ -159,12 +168,39 @@ X_STATUS GraphicsSystem::SetupGuestGpu(runtime::FunctionDispatcher* function_dis
+         uint64_t no_vsync_interval_ticks = std::max(uint64_t(1), guest_tick_frequency / 1000);
+         uint64_t last_frame_time = chrono::Clock::QueryGuestTickCount();
+         while (vsync_worker_running_) {
++          // Live anti-aliasing: re-apply swap_post_effect each tick so the menu
++          // toggle takes effect without a restart. SetDesiredSwapPostEffect
++          // early-returns when unchanged, so this is cheap.
++          if (command_processor_) {
++            command_processor_->SetDesiredSwapPostEffect(
++                ParseSwapPostEffect(REXCVAR_GET(swap_post_effect)));
++          }
+           uint64_t current_time = chrono::Clock::QueryGuestTickCount();
+-          uint64_t interval_ticks =
+-              REXCVAR_GET(vsync) ? vsync_interval_ticks : no_vsync_interval_ticks;
+-          while (current_time - last_frame_time >= interval_ticks) {
++          // vsync on  -> lock to the guest video mode refresh rate.
++          // vsync off -> honor max_fps (Hz), or run uncapped (~1kHz tick) at 0.
++          uint64_t interval_ticks;
++          if (REXCVAR_GET(vsync)) {
++            interval_ticks = vsync_interval_ticks;
++          } else {
++            int32_t fps_cap = REXCVAR_GET(max_fps);
++            interval_ticks =
++                (fps_cap > 0)
++                    ? std::max(uint64_t(1), uint64_t(double(guest_tick_frequency) / double(fps_cap)))
++                    : no_vsync_interval_ticks;
++            // Never drive the guest vblank FASTER than its native refresh. The
++            // vblank ISR is the game's clock; over-driving it (a high cap or
++            // "uncapped") floods the interrupt and freezes the guest. So the cap
++            // can only ever slow the vblank down, never speed it up.
++            interval_ticks = std::max(interval_ticks, vsync_interval_ticks);
++          }
++          // Fire at most one vblank per wake; drop the backlog if starved (avoids
++          // burst-flooding the guest vblank ISR after an off-core stall).
++          if (current_time - last_frame_time >= interval_ticks) {
+             MarkVblank();
+             last_frame_time += interval_ticks;
++            if (current_time - last_frame_time >= interval_ticks) {
++              last_frame_time = current_time;
++            }
+           }
+           rex::thread::Sleep(std::chrono::milliseconds(1));
+         }
+@@ -312,8 +348,12 @@ void GraphicsSystem::DispatchInterruptCallback(uint32_t source, uint32_t cpu) {
+   //          interrupt_callback_, source, cpu);
+ 
+   uint64_t args[] = {source, interrupt_callback_data_};
++  // Tag KeSetEvents made by the guest ISR as render-thread wakeups, so the CP
++  // stall recovery can re-deliver them (see rex/gpu_stall_recovery.h).
++  rex::gpu_recovery::EnterGpuIsr();
+   function_dispatcher_->ExecuteInterrupt(thread->thread_state(), interrupt_callback_, args,
+                                          rex::countof(args));
++  rex::gpu_recovery::ExitGpuIsr();
+ }
+ 
+ void GraphicsSystem::MarkVblank() {
+diff --git a/src/graphics/pipeline/render_target/cache.cpp b/src/graphics/pipeline/render_target/cache.cpp
+index 953c5fd..5e13ce1 100644
+--- a/src/graphics/pipeline/render_target/cache.cpp
++++ b/src/graphics/pipeline/render_target/cache.cpp
+@@ -650,12 +650,21 @@ bool RenderTargetCache::Update(bool is_rasterization_done,
+     // The last render target can occupy the EDRAM until the base of the first
+     // render target (itself in case of 1 render target) with EDRAM addressing
+     // wrapping.
++    // GoldenEye fix: when only a SINGLE render target is bound (e.g. a depth-only
++    // pass with no viewport, whose estimated height is the full surface height),
++    // do NOT let it wrap around the end of the EDRAM back onto its own base. Such
++    // a wrap claims the tiles [0..base] that still hold the previously resolved
++    // color scene, so the subsequent color resolve finds depth as the owner of
++    // base 0 and dumps depth instead of the scene (black cutscenes/weapon-switch).
++    // A lone render target physically cannot exceed the EDRAM, so cap at its end.
++    uint32_t range_end_tiles =
++        (i + 1 < edram_bases_sorted_count)
++            ? edram_bases_sorted[i + 1].first
++            : (edram_bases_sorted_count == 1 ? xenos::kEdramTileCount
++                                             : (xenos::kEdramTileCount + edram_bases_sorted[0].first));
+     rt_lengths_tiles[i] = std::min(std::min(length_used_tiles_at_32bpp << rt_is_64bpp,
+                                             rt_max_distance_tiles_at_64bpp >> (rt_is_64bpp ^ 1)),
+-                                   ((i + 1 < edram_bases_sorted_count)
+-                                        ? edram_bases_sorted[i + 1].first
+-                                        : (xenos::kEdramTileCount + edram_bases_sorted[0].first)) -
+-                                       rt_base);
++                                   range_end_tiles - rt_base);
+   }
+ 
+   if (interlock_barrier_only) {
+diff --git a/src/graphics/pipeline/texture/cache.cpp b/src/graphics/pipeline/texture/cache.cpp
+index 76f5600..d1e4f0a 100644
+--- a/src/graphics/pipeline/texture/cache.cpp
++++ b/src/graphics/pipeline/texture/cache.cpp
+@@ -934,6 +934,26 @@ void TextureCache::BindingInfoFromFetchConstant(const xenos::xe_gpu_texture_fetc
+   texture_util::GetSubresourcesFromFetchConstant(fetch, &width_minus_1, &height_minus_1,
+                                                  &depth_or_array_size_minus_1, &base_page,
+                                                  &mip_page, nullptr, &mip_max_level);
++  // GoldenEye's bloom samples a resolved buffer via a DEGENERATE fetch constant
++  // whose size_2d is near-max (width 8192 / height 8191). rexglue then allocates
++  // an 8192-wide texture and the guest blur shader divides its sample offset by
++  // 8192, collapsing the horizontal blur -> the bloom resolves to pure vertical
++  // streaks that get composited over the scene (behind the viewmodel). The real
++  // resolved size isn't recoverable here (it's a system-memory texture, not a
++  // live EDRAM render target). Both dimensions >= 4096 is never a real texture
++  // in this title, so reject the descriptor: the composite then samples a black
++  // bloom -> streaks gone, scene unchanged (matches the clean bloom-free frames).
++  if (width_minus_1 >= 4096 && height_minus_1 >= 4096) {
++    static bool s_logged = false;
++    if (!s_logged) {
++      s_logged = true;
++      REXGPU_WARN("Rejecting degenerate {}x{} texture descriptor (broken bloom) base={:08X} "
++                  "fetch=[{:08X} {:08X} {:08X} {:08X} {:08X} {:08X}]",
++                  width_minus_1 + 1, height_minus_1 + 1, base_page << 12, fetch.dword_0,
++                  fetch.dword_1, fetch.dword_2, fetch.dword_3, fetch.dword_4, fetch.dword_5);
++    }
++    return;
++  }
+   if (base_page == 0 && mip_page == 0) {
+     // No texture data at all.
+     return;
+diff --git a/src/graphics/shaders/bytecode/d3d12_5_1/ge_grade_cs.h b/src/graphics/shaders/bytecode/d3d12_5_1/ge_grade_cs.h
+new file mode 100644
+index 0000000..fbf56a4
+--- /dev/null
++++ b/src/graphics/shaders/bytecode/d3d12_5_1/ge_grade_cs.h
+@@ -0,0 +1,495 @@
++#if 0
++//
++// Generated by Microsoft (R) HLSL Shader Compiler 10.1
++//
++//
++// Note: shader requires additional functionality:
++//       Typed UAV Load Additional Formats
++//
++//
++// Buffer Definitions: 
++//
++// cbuffer push_consts
++// {
++//
++//   uint2 xe_grade_size;               // Offset:    0 Size:     8
++//   float xe_brightness;               // Offset:    8 Size:     4
++//   float xe_contrast;                 // Offset:   12 Size:     4
++//   float xe_saturation;               // Offset:   16 Size:     4
++//   float xe_vibrance;                 // Offset:   20 Size:     4
++//   float xe_temperature;              // Offset:   24 Size:     4
++//   float xe_gamma;                    // Offset:   28 Size:     4
++//   float xe_tint_r;                   // Offset:   32 Size:     4
++//   float xe_tint_g;                   // Offset:   36 Size:     4
++//   float xe_tint_b;                   // Offset:   40 Size:     4
++//   float xe_tint_strength;            // Offset:   44 Size:     4
++//
++// }
++//
++//
++// Resource Bindings:
++//
++// Name                                 Type  Format         Dim      ID      HLSL Bind  Count
++// ------------------------------ ---------- ------- ----------- ------- -------------- ------
++// xe_dest                               UAV  float4          2d      U0             u0      1 
++// push_consts                       cbuffer      NA          NA     CB0            cb0      1 
++//
++//
++//
++// Input signature:
++//
++// Name                 Index   Mask Register SysValue  Format   Used
++// -------------------- ----- ------ -------- -------- ------- ------
++// no Input
++//
++// Output signature:
++//
++// Name                 Index   Mask Register SysValue  Format   Used
++// -------------------- ----- ------ -------- -------- ------- ------
++// no Output
++cs_5_1
++dcl_globalFlags refactoringAllowed
++dcl_constantbuffer CB0[0:0][3], immediateIndexed, space=0
++dcl_uav_typed_texture2d (float,float,float,float) U0[0:0], space=0
++dcl_input vThreadID.xy
++dcl_temps 2
++dcl_thread_group 8, 8, 1
++uge r0.xy, vThreadID.xyxx, CB0[0][0].xyxx
++or r0.x, r0.y, r0.x
++if_nz r0.x
++  ret 
++endif 
++ld_uav_typed r0.xyz, vThreadID.xyyy, U0[0].xyzw
++mad r0.x, CB0[0][1].z, l(0.100000), r0.x
++mad r0.z, -CB0[0][1].z, l(0.100000), r0.z
++add r0.xyz, r0.xyzx, CB0[0][0].zzzz
++add r0.xyz, r0.xyzx, l(-0.500000, -0.500000, -0.500000, 0.000000)
++mad r0.xyz, r0.xyzx, CB0[0][0].wwww, l(0.500000, 0.500000, 0.500000, 0.000000)
++mad r1.xyz, r0.xyzx, CB0[0][2].xyzx, -r0.xyzx
++mad r0.xyz, CB0[0][2].wwww, r1.xyzx, r0.xyzx
++max r1.xyz, r0.xyzx, l(0.000000, 0.000000, 0.000000, 0.000000)
++dp3 r0.w, r1.xyzx, l(0.212600, 0.715200, 0.072200, 0.000000)
++add r0.xyz, -r0.wwww, r0.xyzx
++mul r1.xyz, r0.xyzx, CB0[0][1].xxxx
++mad r0.xyz, CB0[0][1].xxxx, r0.xyzx, r0.wwww
++max r1.w, r0.z, r0.y
++max r1.w, r0.x, r1.w
++min r0.y, r0.z, r0.y
++min r0.x, r0.y, r0.x
++add_sat r0.x, -r0.x, r1.w
++add r0.x, -r0.x, l(1.000000)
++mad r0.x, CB0[0][1].y, r0.x, l(1.000000)
++mad r0.xyz, r0.xxxx, r1.xyzx, r0.wwww
++max r0.xyz, r0.xyzx, l(0.000100, 0.000100, 0.000100, 0.000000)
++div r0.w, l(1.000000, 1.000000, 1.000000, 1.000000), CB0[0][1].w
++log r0.xyz, r0.xyzx
++mul r0.xyz, r0.xyzx, r0.wwww
++exp r0.xyz, r0.xyzx
++min r0.xyz, r0.xyzx, l(1.000000, 1.000000, 1.000000, 0.000000)
++mov r0.w, l(1.000000)
++store_uav_typed U0[0].xyzw, vThreadID.xyyy, r0.xyzw
++ret 
++// Approximately 35 instruction slots used
++#endif
++
++const BYTE ge_grade_cs[] =
++{
++     68,  88,  66,  67,  61,  26, 
++    139, 253, 241, 238,  84,  70, 
++     89,  10,  57, 183,  83, 180, 
++     75,   2,   1,   0,   0,   0, 
++     80,   9,   0,   0,   6,   0, 
++      0,   0,  56,   0,   0,   0, 
++    184,   3,   0,   0, 200,   3, 
++      0,   0, 216,   3,   0,   0, 
++    164,   8,   0,   0, 180,   8, 
++      0,   0,  82,  68,  69,  70, 
++    120,   3,   0,   0,   1,   0, 
++      0,   0, 160,   0,   0,   0, 
++      2,   0,   0,   0,  60,   0, 
++      0,   0,   1,   5,  83,  67, 
++      0, 133,   0,   0,  77,   3, 
++      0,   0,  19,  19,  68,  37, 
++     60,   0,   0,   0,  24,   0, 
++      0,   0,  40,   0,   0,   0, 
++     40,   0,   0,   0,  36,   0, 
++      0,   0,  12,   0,   0,   0, 
++      0,   0,   0,   0, 140,   0, 
++      0,   0,   4,   0,   0,   0, 
++      5,   0,   0,   0,   4,   0, 
++      0,   0, 255, 255, 255, 255, 
++      0,   0,   0,   0,   1,   0, 
++      0,   0,  12,   0,   0,   0, 
++      0,   0,   0,   0,   0,   0, 
++      0,   0, 148,   0,   0,   0, 
++      0,   0,   0,   0,   0,   0, 
++      0,   0,   0,   0,   0,   0, 
++      0,   0,   0,   0,   0,   0, 
++      0,   0,   1,   0,   0,   0, 
++      1,   0,   0,   0,   0,   0, 
++      0,   0,   0,   0,   0,   0, 
++    120, 101,  95, 100, 101, 115, 
++    116,   0, 112, 117, 115, 104, 
++     95,  99, 111, 110, 115, 116, 
++    115,   0, 148,   0,   0,   0, 
++     11,   0,   0,   0, 184,   0, 
++      0,   0,  48,   0,   0,   0, 
++      0,   0,   0,   0,   0,   0, 
++      0,   0, 112,   2,   0,   0, 
++      0,   0,   0,   0,   8,   0, 
++      0,   0,   2,   0,   0,   0, 
++    132,   2,   0,   0,   0,   0, 
++      0,   0, 255, 255, 255, 255, 
++      0,   0,   0,   0, 255, 255, 
++    255, 255,   0,   0,   0,   0, 
++    168,   2,   0,   0,   8,   0, 
++      0,   0,   4,   0,   0,   0, 
++      2,   0,   0,   0, 188,   2, 
++      0,   0,   0,   0,   0,   0, 
++    255, 255, 255, 255,   0,   0, 
++      0,   0, 255, 255, 255, 255, 
++      0,   0,   0,   0, 224,   2, 
++      0,   0,  12,   0,   0,   0, 
++      4,   0,   0,   0,   2,   0, 
++      0,   0, 188,   2,   0,   0, 
++      0,   0,   0,   0, 255, 255, 
++    255, 255,   0,   0,   0,   0, 
++    255, 255, 255, 255,   0,   0, 
++      0,   0, 236,   2,   0,   0, 
++     16,   0,   0,   0,   4,   0, 
++      0,   0,   2,   0,   0,   0, 
++    188,   2,   0,   0,   0,   0, 
++      0,   0, 255, 255, 255, 255, 
++      0,   0,   0,   0, 255, 255, 
++    255, 255,   0,   0,   0,   0, 
++    250,   2,   0,   0,  20,   0, 
++      0,   0,   4,   0,   0,   0, 
++      2,   0,   0,   0, 188,   2, 
++      0,   0,   0,   0,   0,   0, 
++    255, 255, 255, 255,   0,   0, 
++      0,   0, 255, 255, 255, 255, 
++      0,   0,   0,   0,   6,   3, 
++      0,   0,  24,   0,   0,   0, 
++      4,   0,   0,   0,   2,   0, 
++      0,   0, 188,   2,   0,   0, 
++      0,   0,   0,   0, 255, 255, 
++    255, 255,   0,   0,   0,   0, 
++    255, 255, 255, 255,   0,   0, 
++      0,   0,  21,   3,   0,   0, 
++     28,   0,   0,   0,   4,   0, 
++      0,   0,   2,   0,   0,   0, 
++    188,   2,   0,   0,   0,   0, 
++      0,   0, 255, 255, 255, 255, 
++      0,   0,   0,   0, 255, 255, 
++    255, 255,   0,   0,   0,   0, 
++     30,   3,   0,   0,  32,   0, 
++      0,   0,   4,   0,   0,   0, 
++      2,   0,   0,   0, 188,   2, 
++      0,   0,   0,   0,   0,   0, 
++    255, 255, 255, 255,   0,   0, 
++      0,   0, 255, 255, 255, 255, 
++      0,   0,   0,   0,  40,   3, 
++      0,   0,  36,   0,   0,   0, 
++      4,   0,   0,   0,   2,   0, 
++      0,   0, 188,   2,   0,   0, 
++      0,   0,   0,   0, 255, 255, 
++    255, 255,   0,   0,   0,   0, 
++    255, 255, 255, 255,   0,   0, 
++      0,   0,  50,   3,   0,   0, 
++     40,   0,   0,   0,   4,   0, 
++      0,   0,   2,   0,   0,   0, 
++    188,   2,   0,   0,   0,   0, 
++      0,   0, 255, 255, 255, 255, 
++      0,   0,   0,   0, 255, 255, 
++    255, 255,   0,   0,   0,   0, 
++     60,   3,   0,   0,  44,   0, 
++      0,   0,   4,   0,   0,   0, 
++      2,   0,   0,   0, 188,   2, 
++      0,   0,   0,   0,   0,   0, 
++    255, 255, 255, 255,   0,   0, 
++      0,   0, 255, 255, 255, 255, 
++      0,   0,   0,   0, 120, 101, 
++     95, 103, 114,  97, 100, 101, 
++     95, 115, 105, 122, 101,   0, 
++    117, 105, 110, 116,  50,   0, 
++      1,   0,  19,   0,   1,   0, 
++      2,   0,   0,   0,   0,   0, 
++      0,   0,   0,   0,   0,   0, 
++      0,   0,   0,   0,   0,   0, 
++      0,   0,   0,   0,   0,   0, 
++      0,   0, 126,   2,   0,   0, 
++    120, 101,  95,  98, 114, 105, 
++    103, 104, 116, 110, 101, 115, 
++    115,   0, 102, 108, 111,  97, 
++    116,   0,   0,   0,   3,   0, 
++      1,   0,   1,   0,   0,   0, 
++      0,   0,   0,   0,   0,   0, 
++      0,   0,   0,   0,   0,   0, 
++      0,   0,   0,   0,   0,   0, 
++      0,   0,   0,   0, 182,   2, 
++      0,   0, 120, 101,  95,  99, 
++    111, 110, 116, 114,  97, 115, 
++    116,   0, 120, 101,  95, 115, 
++     97, 116, 117, 114,  97, 116, 
++    105, 111, 110,   0, 120, 101, 
++     95, 118, 105,  98, 114,  97, 
++    110,  99, 101,   0, 120, 101, 
++     95, 116, 101, 109, 112, 101, 
++    114,  97, 116, 117, 114, 101, 
++      0, 120, 101,  95, 103,  97, 
++    109, 109,  97,   0, 120, 101, 
++     95, 116, 105, 110, 116,  95, 
++    114,   0, 120, 101,  95, 116, 
++    105, 110, 116,  95, 103,   0, 
++    120, 101,  95, 116, 105, 110, 
++    116,  95,  98,   0, 120, 101, 
++     95, 116, 105, 110, 116,  95, 
++    115, 116, 114, 101, 110, 103, 
++    116, 104,   0,  77, 105,  99, 
++    114, 111, 115, 111, 102, 116, 
++     32,  40,  82,  41,  32,  72, 
++     76,  83,  76,  32,  83, 104, 
++     97, 100, 101, 114,  32,  67, 
++    111, 109, 112, 105, 108, 101, 
++    114,  32,  49,  48,  46,  49, 
++      0, 171, 171, 171,  73,  83, 
++     71,  78,   8,   0,   0,   0, 
++      0,   0,   0,   0,   8,   0, 
++      0,   0,  79,  83,  71,  78, 
++      8,   0,   0,   0,   0,   0, 
++      0,   0,   8,   0,   0,   0, 
++     83,  72,  69,  88, 196,   4, 
++      0,   0,  81,   0,   5,   0, 
++     49,   1,   0,   0, 106,   8, 
++      0,   1,  89,   0,   0,   7, 
++     70, 142,  48,   0,   0,   0, 
++      0,   0,   0,   0,   0,   0, 
++      0,   0,   0,   0,   3,   0, 
++      0,   0,   0,   0,   0,   0, 
++    156,  24,   0,   7,  70, 238, 
++     49,   0,   0,   0,   0,   0, 
++      0,   0,   0,   0,   0,   0, 
++      0,   0,  85,  85,   0,   0, 
++      0,   0,   0,   0,  95,   0, 
++      0,   2,  50,   0,   2,   0, 
++    104,   0,   0,   2,   2,   0, 
++      0,   0, 155,   0,   0,   4, 
++      8,   0,   0,   0,   8,   0, 
++      0,   0,   1,   0,   0,   0, 
++     80,   0,   0,   8,  50,   0, 
++     16,   0,   0,   0,   0,   0, 
++     70,   0,   2,   0,  70, 128, 
++     48,   0,   0,   0,   0,   0, 
++      0,   0,   0,   0,   0,   0, 
++      0,   0,  60,   0,   0,   7, 
++     18,   0,  16,   0,   0,   0, 
++      0,   0,  26,   0,  16,   0, 
++      0,   0,   0,   0,  10,   0, 
++     16,   0,   0,   0,   0,   0, 
++     31,   0,   4,   3,  10,   0, 
++     16,   0,   0,   0,   0,   0, 
++     62,   0,   0,   1,  21,   0, 
++      0,   1, 163,   0,   0,   7, 
++    114,   0,  16,   0,   0,   0, 
++      0,   0,  70,   5,   2,   0, 
++     70, 238,  33,   0,   0,   0, 
++      0,   0,   0,   0,   0,   0, 
++     50,   0,   0,  11,  18,   0, 
++     16,   0,   0,   0,   0,   0, 
++     42, 128,  48,   0,   0,   0, 
++      0,   0,   0,   0,   0,   0, 
++      1,   0,   0,   0,   1,  64, 
++      0,   0, 205, 204, 204,  61, 
++     10,   0,  16,   0,   0,   0, 
++      0,   0,  50,   0,   0,  12, 
++     66,   0,  16,   0,   0,   0, 
++      0,   0,  42, 128,  48, 128, 
++     65,   0,   0,   0,   0,   0, 
++      0,   0,   0,   0,   0,   0, 
++      1,   0,   0,   0,   1,  64, 
++      0,   0, 205, 204, 204,  61, 
++     42,   0,  16,   0,   0,   0, 
++      0,   0,   0,   0,   0,   9, 
++    114,   0,  16,   0,   0,   0, 
++      0,   0,  70,   2,  16,   0, 
++      0,   0,   0,   0, 166, 138, 
++     48,   0,   0,   0,   0,   0, 
++      0,   0,   0,   0,   0,   0, 
++      0,   0,   0,   0,   0,  10, 
++    114,   0,  16,   0,   0,   0, 
++      0,   0,  70,   2,  16,   0, 
++      0,   0,   0,   0,   2,  64, 
++      0,   0,   0,   0,   0, 191, 
++      0,   0,   0, 191,   0,   0, 
++      0, 191,   0,   0,   0,   0, 
++     50,   0,   0,  14, 114,   0, 
++     16,   0,   0,   0,   0,   0, 
++     70,   2,  16,   0,   0,   0, 
++      0,   0, 246, 143,  48,   0, 
++      0,   0,   0,   0,   0,   0, 
++      0,   0,   0,   0,   0,   0, 
++      2,  64,   0,   0,   0,   0, 
++      0,  63,   0,   0,   0,  63, 
++      0,   0,   0,  63,   0,   0, 
++      0,   0,  50,   0,   0,  12, 
++    114,   0,  16,   0,   1,   0, 
++      0,   0,  70,   2,  16,   0, 
++      0,   0,   0,   0,  70, 130, 
++     48,   0,   0,   0,   0,   0, 
++      0,   0,   0,   0,   2,   0, 
++      0,   0,  70,   2,  16, 128, 
++     65,   0,   0,   0,   0,   0, 
++      0,   0,  50,   0,   0,  11, 
++    114,   0,  16,   0,   0,   0, 
++      0,   0, 246, 143,  48,   0, 
++      0,   0,   0,   0,   0,   0, 
++      0,   0,   2,   0,   0,   0, 
++     70,   2,  16,   0,   1,   0, 
++      0,   0,  70,   2,  16,   0, 
++      0,   0,   0,   0,  52,   0, 
++      0,  10, 114,   0,  16,   0, 
++      1,   0,   0,   0,  70,   2, 
++     16,   0,   0,   0,   0,   0, 
++      2,  64,   0,   0,   0,   0, 
++      0,   0,   0,   0,   0,   0, 
++      0,   0,   0,   0,   0,   0, 
++      0,   0,  16,   0,   0,  10, 
++    130,   0,  16,   0,   0,   0, 
++      0,   0,  70,   2,  16,   0, 
++      1,   0,   0,   0,   2,  64, 
++      0,   0, 208, 179,  89,  62, 
++     89,  23,  55,  63, 152, 221, 
++    147,  61,   0,   0,   0,   0, 
++      0,   0,   0,   8, 114,   0, 
++     16,   0,   0,   0,   0,   0, 
++    246,  15,  16, 128,  65,   0, 
++      0,   0,   0,   0,   0,   0, 
++     70,   2,  16,   0,   0,   0, 
++      0,   0,  56,   0,   0,   9, 
++    114,   0,  16,   0,   1,   0, 
++      0,   0,  70,   2,  16,   0, 
++      0,   0,   0,   0,   6, 128, 
++     48,   0,   0,   0,   0,   0, 
++      0,   0,   0,   0,   1,   0, 
++      0,   0,  50,   0,   0,  11, 
++    114,   0,  16,   0,   0,   0, 
++      0,   0,   6, 128,  48,   0, 
++      0,   0,   0,   0,   0,   0, 
++      0,   0,   1,   0,   0,   0, 
++     70,   2,  16,   0,   0,   0, 
++      0,   0, 246,  15,  16,   0, 
++      0,   0,   0,   0,  52,   0, 
++      0,   7, 130,   0,  16,   0, 
++      1,   0,   0,   0,  42,   0, 
++     16,   0,   0,   0,   0,   0, 
++     26,   0,  16,   0,   0,   0, 
++      0,   0,  52,   0,   0,   7, 
++    130,   0,  16,   0,   1,   0, 
++      0,   0,  10,   0,  16,   0, 
++      0,   0,   0,   0,  58,   0, 
++     16,   0,   1,   0,   0,   0, 
++     51,   0,   0,   7,  34,   0, 
++     16,   0,   0,   0,   0,   0, 
++     42,   0,  16,   0,   0,   0, 
++      0,   0,  26,   0,  16,   0, 
++      0,   0,   0,   0,  51,   0, 
++      0,   7,  18,   0,  16,   0, 
++      0,   0,   0,   0,  26,   0, 
++     16,   0,   0,   0,   0,   0, 
++     10,   0,  16,   0,   0,   0, 
++      0,   0,   0,  32,   0,   8, 
++     18,   0,  16,   0,   0,   0, 
++      0,   0,  10,   0,  16, 128, 
++     65,   0,   0,   0,   0,   0, 
++      0,   0,  58,   0,  16,   0, 
++      1,   0,   0,   0,   0,   0, 
++      0,   8,  18,   0,  16,   0, 
++      0,   0,   0,   0,  10,   0, 
++     16, 128,  65,   0,   0,   0, 
++      0,   0,   0,   0,   1,  64, 
++      0,   0,   0,   0, 128,  63, 
++     50,   0,   0,  11,  18,   0, 
++     16,   0,   0,   0,   0,   0, 
++     26, 128,  48,   0,   0,   0, 
++      0,   0,   0,   0,   0,   0, 
++      1,   0,   0,   0,  10,   0, 
++     16,   0,   0,   0,   0,   0, 
++      1,  64,   0,   0,   0,   0, 
++    128,  63,  50,   0,   0,   9, 
++    114,   0,  16,   0,   0,   0, 
++      0,   0,   6,   0,  16,   0, 
++      0,   0,   0,   0,  70,   2, 
++     16,   0,   1,   0,   0,   0, 
++    246,  15,  16,   0,   0,   0, 
++      0,   0,  52,   0,   0,  10, 
++    114,   0,  16,   0,   0,   0, 
++      0,   0,  70,   2,  16,   0, 
++      0,   0,   0,   0,   2,  64, 
++      0,   0,  23, 183, 209,  56, 
++     23, 183, 209,  56,  23, 183, 
++    209,  56,   0,   0,   0,   0, 
++     14,   0,   0,  12, 130,   0, 
++     16,   0,   0,   0,   0,   0, 
++      2,  64,   0,   0,   0,   0, 
++    128,  63,   0,   0, 128,  63, 
++      0,   0, 128,  63,   0,   0, 
++    128,  63,  58, 128,  48,   0, 
++      0,   0,   0,   0,   0,   0, 
++      0,   0,   1,   0,   0,   0, 
++     47,   0,   0,   5, 114,   0, 
++     16,   0,   0,   0,   0,   0, 
++     70,   2,  16,   0,   0,   0, 
++      0,   0,  56,   0,   0,   7, 
++    114,   0,  16,   0,   0,   0, 
++      0,   0,  70,   2,  16,   0, 
++      0,   0,   0,   0, 246,  15, 
++     16,   0,   0,   0,   0,   0, 
++     25,   0,   0,   5, 114,   0, 
++     16,   0,   0,   0,   0,   0, 
++     70,   2,  16,   0,   0,   0, 
++      0,   0,  51,   0,   0,  10, 
++    114,   0,  16,   0,   0,   0, 
++      0,   0,  70,   2,  16,   0, 
++      0,   0,   0,   0,   2,  64, 
++      0,   0,   0,   0, 128,  63, 
++      0,   0, 128,  63,   0,   0, 
++    128,  63,   0,   0,   0,   0, 
++     54,   0,   0,   5, 130,   0, 
++     16,   0,   0,   0,   0,   0, 
++      1,  64,   0,   0,   0,   0, 
++    128,  63, 164,   0,   0,   7, 
++    242, 224,  33,   0,   0,   0, 
++      0,   0,   0,   0,   0,   0, 
++     70,   5,   2,   0,  70,  14, 
++     16,   0,   0,   0,   0,   0, 
++     62,   0,   0,   1,  83,  70, 
++     73,  48,   8,   0,   0,   0, 
++      0,   8,   0,   0,   0,   0, 
++      0,   0,  83,  84,  65,  84, 
++    148,   0,   0,   0,  35,   0, 
++      0,   0,   2,   0,   0,   0, 
++      0,   0,   0,   0,   1,   0, 
++      0,   0,  26,   0,   0,   0, 
++      0,   0,   0,   0,   2,   0, 
++      0,   0,   2,   0,   0,   0, 
++      1,   0,   0,   0,   0,   0, 
++      0,   0,   0,   0,   0,   0, 
++      0,   0,   0,   0,   0,   0, 
++      0,   0,   0,   0,   0,   0, 
++      0,   0,   0,   0,   1,   0, 
++      0,   0,   0,   0,   0,   0, 
++      0,   0,   0,   0,   0,   0, 
++      0,   0,   1,   0,   0,   0, 
++      0,   0,   0,   0,   0,   0, 
++      0,   0,   0,   0,   0,   0, 
++      0,   0,   0,   0,   0,   0, 
++      0,   0,   0,   0,   0,   0, 
++      0,   0,   0,   0,   0,   0, 
++      0,   0,   0,   0,   0,   0, 
++      0,   0,   0,   0,   0,   0, 
++      0,   0,   0,   0,   0,   0, 
++      0,   0,   0,   0,   0,   0, 
++      0,   0,   0,   0,   0,   0, 
++      0,   0,   0,   0,   1,   0, 
++      0,   0
++};
+diff --git a/src/graphics/shaders/ge_grade.cs.hlsl b/src/graphics/shaders/ge_grade.cs.hlsl
+new file mode 100644
+index 0000000..9c3ab08
+--- /dev/null
++++ b/src/graphics/shaders/ge_grade.cs.hlsl
+@@ -0,0 +1,61 @@
++// ge - colour-grade post-process compute shader.
++//
++// Runs in-place over the final guest-output image (R10G10B10A2_UNORM) right
++// after gamma/FXAA in the D3D12 swap. Applies a per-pixel grade chain:
++// temperature -> brightness -> contrast -> tint -> saturation -> vibrance ->
++// gamma. All neutral defaults = identity (no visible change).
++//
++// Scalars only in the cbuffer to keep a tight, straddle-free 32-bit-constant
++// layout (12 dwords) matching GradeConstants on the C++ side.
++
++cbuffer push_consts : register(b0) {
++  uint2 xe_grade_size;      // 0
++  float xe_brightness;      // 8   (-1..1, added)
++  float xe_contrast;        // 12  (0..2, 1=none)
++  float xe_saturation;      // 16  (0..2, 1=none)
++  float xe_vibrance;        // 20  (-1..1)
++  float xe_temperature;     // 24  (-1..1, warm/cool)
++  float xe_gamma;           // 28  (0.3..3, 1=none)
++  float xe_tint_r;          // 32
++  float xe_tint_g;          // 36
++  float xe_tint_b;          // 40
++  float xe_tint_strength;   // 44  (0..1)
++};
++
++RWTexture2D<float4> xe_dest : register(u0);
++
++[numthreads(8, 8, 1)]
++void main(uint3 xe_thread_id : SV_DispatchThreadID) {
++  [branch] if (xe_thread_id.x >= xe_grade_size.x || xe_thread_id.y >= xe_grade_size.y) {
++    return;
++  }
++  int2 coord = int2(xe_thread_id.xy);
++  float3 c = xe_dest[coord].rgb;
++
++  // Temperature: push warm (R up / B down) or cool (opposite).
++  c.r += xe_temperature * 0.10;
++  c.b -= xe_temperature * 0.10;
++
++  // Brightness (additive) then contrast about mid-grey.
++  c += xe_brightness;
++  c = (c - 0.5) * xe_contrast + 0.5;
++
++  // Tint: multiply toward the tint colour by strength.
++  float3 tint = float3(xe_tint_r, xe_tint_g, xe_tint_b);
++  c = lerp(c, c * tint, xe_tint_strength);
++
++  // Saturation about luma.
++  float luma = dot(max(c, 0.0), float3(0.2126, 0.7152, 0.0722));
++  c = lerp(float3(luma, luma, luma), c, xe_saturation);
++
++  // Vibrance: boost less-saturated pixels more.
++  float mx = max(c.r, max(c.g, c.b));
++  float mn = min(c.r, min(c.g, c.b));
++  float sat = mx - mn;
++  c = lerp(float3(luma, luma, luma), c, 1.0 + xe_vibrance * (1.0 - saturate(sat)));
++
++  // Gamma.
++  c = pow(max(c, 0.0001), 1.0 / xe_gamma);
++
++  xe_dest[coord] = float4(saturate(c), 1.0);
++}
+diff --git a/src/graphics/vulkan/command_processor.cpp b/src/graphics/vulkan/command_processor.cpp
+index 001f36b..7e33af0 100644
+--- a/src/graphics/vulkan/command_processor.cpp
++++ b/src/graphics/vulkan/command_processor.cpp
+@@ -12,6 +12,8 @@
+ #include <algorithm>
+ #include <array>
+ #include <cstdint>
++#include <cmath>
++#include <cstdlib>
+ #include <cstring>
+ #include <iterator>
+ #include <mutex>
+@@ -55,7 +57,14 @@ REXCVAR_DEFINE_BOOL(vulkan_readback_memexport, false, "GPU/Vulkan",
+                     "Read data written by memory export in shaders on the CPU")
+     .lifecycle(rex::cvar::Lifecycle::kHotReload);
+ 
+-REXCVAR_DEFINE_BOOL(vulkan_async_skip_incomplete_frames, true, "GPU/Vulkan",
++// GoldenEye macOS port: never drop whole frames on macOS (see
++// async_shader_compilation); a missing object beats a black screen.
++#if defined(__APPLE__)
++#define GE_SKIP_INCOMPLETE_DEFAULT false
++#else
++#define GE_SKIP_INCOMPLETE_DEFAULT true
++#endif
++REXCVAR_DEFINE_BOOL(vulkan_async_skip_incomplete_frames, GE_SKIP_INCOMPLETE_DEFAULT, "GPU/Vulkan",
+                     "When async shader compilation is enabled, skip presenting frames that "
+                     "used placeholder pipelines to avoid visible flashing")
+     .lifecycle(rex::cvar::Lifecycle::kHotReload);
+@@ -495,6 +504,81 @@ void main() {
+ )";
+ }
+ 
++
++// ge colour-grade (port of shaders/ge_grade.cs.hlsl). Push constants extend the
++// FXAA block so one pipeline layout serves grade-only and FXAA+grade passes.
++constexpr std::string_view kGeGradePushConstants = R"(
++  float xe_brightness;
++  float xe_contrast;
++  float xe_saturation;
++  float xe_vibrance;
++  float xe_temperature;
++  float xe_gamma;
++  float xe_tint_r;
++  float xe_tint_g;
++  float xe_tint_b;
++  float xe_tint_strength;
++)";
++
++constexpr std::string_view kGeGradeFunction = R"(
++vec3 XeGeGrade(vec3 c) {
++  c.r += xe_temperature * 0.10;
++  c.b -= xe_temperature * 0.10;
++  c += xe_brightness;
++  c = (c - 0.5) * xe_contrast + 0.5;
++  c = mix(c, c * vec3(xe_tint_r, xe_tint_g, xe_tint_b), xe_tint_strength);
++  float luma = dot(max(c, vec3(0.0)), vec3(0.2126, 0.7152, 0.0722));
++  c = mix(vec3(luma), c, xe_saturation);
++  float sat = max(c.r, max(c.g, c.b)) - min(c.r, min(c.g, c.b));
++  c = mix(vec3(luma), c, 1.0 + xe_vibrance * (1.0 - clamp(sat, 0.0, 1.0)));
++  c = pow(max(c, vec3(0.0001)), vec3(1.0 / xe_gamma));
++  return clamp(c, 0.0, 1.0);
++}
++)";
++
++// FXAA source with the grade applied to its output.
++std::string GetSwapFxaaGradeComputeSource(bool extreme_quality) {
++  std::string src = GetSwapFxaaComputeSource(extreme_quality);
++  const std::string_view size_inv = "vec2 xe_fxaa_size_inv;";
++  size_t pos = src.find(size_inv);
++  if (pos == std::string::npos) return {};
++  src.insert(pos + size_inv.size(), kGeGradePushConstants);
++  pos = src.find("void main() {");
++  if (pos == std::string::npos) return {};
++  src.insert(pos, kGeGradeFunction);
++  const std::string_view store = "vec4(result, 1.0)";
++  pos = src.rfind(store);
++  if (pos == std::string::npos) return {};
++  src.replace(pos, store.size(), "vec4(XeGeGrade(result), 1.0)");
++  return src;
++}
++
++// Grade-only pass: intermediate image -> guest output.
++std::string GetSwapGradeComputeSource() {
++  std::string src = R"(#version 450
++layout(local_size_x = 16, local_size_y = 8, local_size_z = 1) in;
++layout(push_constant) uniform XeGeGradeConstants {
++  uvec2 xe_fxaa_size;
++  vec2 xe_fxaa_size_inv;)";
++  src += kGeGradePushConstants;
++  src += R"(};
++layout(set = 0, binding = 0) uniform sampler2D xe_fxaa_source;
++layout(set = 1, binding = 0, rgb10_a2) writeonly uniform image2D xe_fxaa_dest;
++)";
++  src += kGeGradeFunction;
++  src += R"(
++void main() {
++  uvec2 pixel = gl_GlobalInvocationID.xy;
++  if (any(greaterThanEqual(pixel, xe_fxaa_size))) {
++    return;
++  }
++  vec3 c = texelFetch(xe_fxaa_source, ivec2(pixel), 0).rgb;
++  imageStore(xe_fxaa_dest, ivec2(pixel), vec4(XeGeGrade(c), 1.0));
++}
++)";
++  return src;
++}
++
+ bool CompileGlslToSpirvInternal(EShLanguage stage, std::string_view source,
+                                 std::vector<uint32_t>& spirv_out, std::string& error_out) {
+   static std::once_flag glslang_initialize_once;
+@@ -1502,6 +1586,13 @@ bool VulkanCommandProcessor::SetupContext() {
+     REXGPU_ERROR("Failed to create the FXAA compute pipeline layout");
+     return false;
+   }
++  // ge colour-grade layout: same sets as FXAA, larger push constant range.
++  swap_fxaa_push_constant_range.size = sizeof(SwapGradeConstants);
++  if (dfn.vkCreatePipelineLayout(device, &swap_apply_gamma_pipeline_layout_create_info, nullptr,
++                                 &swap_grade_pipeline_layout_) != VK_SUCCESS) {
++    REXGPU_WARN("Failed to create the colour-grade compute pipeline layout");
++    swap_grade_pipeline_layout_ = VK_NULL_HANDLE;
++  }
+ 
+   // Gamma application render pass. Doesn't make assumptions about outer usage
+   // (explicit barriers must be used instead) for simplicity of use in different
+@@ -1861,6 +1952,31 @@ bool VulkanCommandProcessor::SetupContext() {
+     }
+   }
+ 
++  // ge colour-grade compute pipelines (optional).
++  if (swap_grade_pipeline_layout_ != VK_NULL_HANDLE) {
++    auto create_grade_pipeline = [&](const std::string& source, VkPipeline& pipeline,
++                                     const char* name) {
++      std::vector<uint32_t> spirv;
++      std::string error;
++      if (source.empty() ||
++          !CompileGlslToSpirv(VK_SHADER_STAGE_COMPUTE_BIT, source, spirv, error)) {
++        REXGPU_WARN("Failed to compile the {} shader: {}", name, error);
++        return;
++      }
++      pipeline = ui::vulkan::util::CreateComputePipeline(
++          vulkan_device, swap_grade_pipeline_layout_, spirv.data(),
++          sizeof(uint32_t) * spirv.size());
++      if (pipeline == VK_NULL_HANDLE) {
++        REXGPU_WARN("Failed to create the {} pipeline", name);
++      }
++    };
++    create_grade_pipeline(GetSwapGradeComputeSource(), swap_grade_pipeline_, "colour-grade");
++    create_grade_pipeline(GetSwapFxaaGradeComputeSource(false), swap_fxaa_grade_pipeline_,
++                          "FXAA colour-grade");
++    create_grade_pipeline(GetSwapFxaaGradeComputeSource(true), swap_fxaa_extreme_grade_pipeline_,
++                          "extreme FXAA colour-grade");
++  }
++
+   VkPipelineLayoutCreateInfo resolve_downscale_layout_create_info = {};
+   resolve_downscale_layout_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+   VkDescriptorSetLayout resolve_downscale_set_layout =
+@@ -1956,6 +2072,10 @@ void VulkanCommandProcessor::ShutdownContext() {
+   ui::vulkan::util::DestroyAndNullHandle(dfn.vkDestroyPipeline, device,
+                                          swap_fxaa_extreme_pipeline_);
+   ui::vulkan::util::DestroyAndNullHandle(dfn.vkDestroyPipeline, device, swap_fxaa_pipeline_);
++  ui::vulkan::util::DestroyAndNullHandle(dfn.vkDestroyPipeline, device,
++                                         swap_fxaa_extreme_grade_pipeline_);
++  ui::vulkan::util::DestroyAndNullHandle(dfn.vkDestroyPipeline, device, swap_fxaa_grade_pipeline_);
++  ui::vulkan::util::DestroyAndNullHandle(dfn.vkDestroyPipeline, device, swap_grade_pipeline_);
+   ui::vulkan::util::DestroyAndNullHandle(dfn.vkDestroyPipeline, device,
+                                          swap_apply_gamma_compute_pwl_fxaa_luma_pipeline_);
+   ui::vulkan::util::DestroyAndNullHandle(dfn.vkDestroyPipeline, device,
+@@ -1989,6 +2109,8 @@ void VulkanCommandProcessor::ShutdownContext() {
+                                          swap_apply_gamma_render_pass_);
+   ui::vulkan::util::DestroyAndNullHandle(dfn.vkDestroyPipelineLayout, device,
+                                          swap_fxaa_pipeline_layout_);
++  ui::vulkan::util::DestroyAndNullHandle(dfn.vkDestroyPipelineLayout, device,
++                                         swap_grade_pipeline_layout_);
+   ui::vulkan::util::DestroyAndNullHandle(dfn.vkDestroyPipelineLayout, device,
+                                          swap_apply_gamma_compute_pipeline_layout_);
+   ui::vulkan::util::DestroyAndNullHandle(dfn.vkDestroyPipelineLayout, device,
+@@ -2513,6 +2635,67 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
+         }
+         bool use_compute_gamma = swap_apply_gamma_compute_pipeline != VK_NULL_HANDLE;
+ 
++        // ge colour-grade (Post-FX sliders). Applied as the final compute pass:
++        // folded into FXAA when FXAA is on, otherwise gamma goes to the
++        // intermediate image and a grade pass writes the guest output. Skipped
++        // entirely at neutral values, so it costs nothing by default.
++        SwapGradeConstants swap_grade_constants = {};
++        bool use_grade = false;
++        if (use_compute_gamma && rex::cvar::GetFlagByName("postfx_enabled") == "true") {
++          auto grade_f = [](const char* name, float def) {
++            std::string v = rex::cvar::GetFlagByName(name);
++            return v.empty() ? def : float(std::atof(v.c_str()));
++          };
++          swap_grade_constants.size[0] = guest_output_width;
++          swap_grade_constants.size[1] = guest_output_height;
++          swap_grade_constants.size_inv[0] = 1.0f / float(guest_output_width);
++          swap_grade_constants.size_inv[1] = 1.0f / float(guest_output_height);
++          swap_grade_constants.brightness = grade_f("postfx_brightness", 0.0f);
++          swap_grade_constants.contrast = grade_f("postfx_contrast", 1.0f);
++          swap_grade_constants.saturation = grade_f("postfx_saturation", 1.0f);
++          swap_grade_constants.vibrance = grade_f("postfx_vibrance", 0.0f);
++          swap_grade_constants.temperature = grade_f("postfx_temperature", 0.0f);
++          swap_grade_constants.gamma = grade_f("postfx_gamma", 1.0f);
++          swap_grade_constants.tint_r = grade_f("postfx_tint_r", 1.0f);
++          swap_grade_constants.tint_g = grade_f("postfx_tint_g", 1.0f);
++          swap_grade_constants.tint_b = grade_f("postfx_tint_b", 1.0f);
++          swap_grade_constants.tint_strength = grade_f("postfx_tint", 0.0f);
++          if (swap_grade_constants.gamma < 0.01f) {
++            swap_grade_constants.gamma = 0.01f;
++          }
++          auto ne = [](float a, float b) { return std::abs(a - b) > 1.0e-4f; };
++          bool grade_identity =
++              !ne(swap_grade_constants.brightness, 0.0f) &&
++              !ne(swap_grade_constants.contrast, 1.0f) &&
++              !ne(swap_grade_constants.saturation, 1.0f) &&
++              !ne(swap_grade_constants.vibrance, 0.0f) &&
++              !ne(swap_grade_constants.temperature, 0.0f) &&
++              !ne(swap_grade_constants.gamma, 1.0f) &&
++              (!ne(swap_grade_constants.tint_strength, 0.0f) ||
++               (!ne(swap_grade_constants.tint_r, 1.0f) && !ne(swap_grade_constants.tint_g, 1.0f) &&
++                !ne(swap_grade_constants.tint_b, 1.0f)));
++          if (!grade_identity) {
++            if (use_fxaa) {
++              use_grade = swap_fxaa_grade_pipeline_ != VK_NULL_HANDLE &&
++                          swap_fxaa_extreme_grade_pipeline_ != VK_NULL_HANDLE;
++            } else {
++              // The intermediate image is RGBA16F, which only the FXAA-luma
++              // gamma variants write; the grade pass ignores the luma alpha.
++              VkPipeline grade_gamma_pipeline =
++                  select_swap_apply_gamma_compute_pipeline(use_pwl_gamma_ramp, true);
++              if (swap_grade_pipeline_ != VK_NULL_HANDLE &&
++                  grade_gamma_pipeline != VK_NULL_HANDLE &&
++                  EnsureSwapFxaaSourceImage(guest_output_width, guest_output_height)) {
++                use_grade = true;
++                swap_apply_gamma_compute_pipeline = grade_gamma_pipeline;
++              }
++            }
++          }
++        }
++        // Whether gamma writes to the intermediate image (FXAA source) instead
++        // of the guest output.
++        const bool use_intermediate = use_fxaa || use_grade;
++
+         // TODO(Triang3l): FXAA can result in more than 8 bits of precision.
+         context.SetIs8bpc(!use_pwl_gamma_ramp && !use_fxaa);
+ 
+@@ -2617,7 +2800,7 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
+                                      : 0,
+                                  VK_ACCESS_SHADER_WRITE_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
+                                  VK_IMAGE_LAYOUT_GENERAL);
+-          if (use_fxaa) {
++          if (use_intermediate) {
+             PushImageMemoryBarrier(swap_fxaa_source_image_, guest_output_subresource_range,
+                                    swap_fxaa_source_stage_mask_ ? swap_fxaa_source_stage_mask_
+                                                                 : VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+@@ -2627,7 +2810,7 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
+           }
+           SubmitBarriers(true);
+ 
+-          if (use_fxaa) {
++          if (use_intermediate) {
+             swap_fxaa_source_stage_mask_ = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+             swap_fxaa_source_access_mask_ = VK_ACCESS_SHADER_WRITE_BIT;
+             swap_fxaa_source_layout_ = VK_IMAGE_LAYOUT_GENERAL;
+@@ -2639,7 +2822,7 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
+           VkDescriptorImageInfo swap_descriptor_destination_storage_image_info;
+           swap_descriptor_destination_storage_image_info.sampler = VK_NULL_HANDLE;
+           swap_descriptor_destination_storage_image_info.imageView =
+-              use_fxaa ? swap_fxaa_source_image_view_ : vulkan_context.image_view();
++              use_intermediate ? swap_fxaa_source_image_view_ : vulkan_context.image_view();
+           swap_descriptor_destination_storage_image_info.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+           VkWriteDescriptorSet swap_descriptor_destination_storage_write;
+           swap_descriptor_destination_storage_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+@@ -2680,7 +2863,7 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
+           uint32_t group_count_y = (guest_output_height + 7) / 8;
+           deferred_command_buffer_.CmdVkDispatch(group_count_x, group_count_y, 1);
+ 
+-          if (use_fxaa) {
++          if (use_intermediate) {
+             // Make the FXAA source image readable and bind a separate
+             // destination storage descriptor targeting the guest output image.
+             PushImageMemoryBarrier(swap_fxaa_source_image_, guest_output_subresource_range,
+@@ -2737,18 +2920,30 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
+             swap_fxaa_descriptor_sets[kSwapFxaaDescriptorSetDestination] =
+                 swap_descriptor_fxaa_destination_storage;
+             deferred_command_buffer_.CmdVkBindDescriptorSets(
+-                VK_PIPELINE_BIND_POINT_COMPUTE, swap_fxaa_pipeline_layout_, 0,
++                VK_PIPELINE_BIND_POINT_COMPUTE,
++                use_grade ? swap_grade_pipeline_layout_ : swap_fxaa_pipeline_layout_, 0,
+                 uint32_t(swap_fxaa_descriptor_sets.size()), swap_fxaa_descriptor_sets.data(), 0,
+                 nullptr);
+-            SwapFxaaConstants swap_fxaa_constants = {
+-                {guest_output_width, guest_output_height},
+-                {1.0f / float(guest_output_width), 1.0f / float(guest_output_height)}};
+-            deferred_command_buffer_.CmdVkPushConstants(
+-                swap_fxaa_pipeline_layout_, VK_SHADER_STAGE_COMPUTE_BIT, 0,
+-                sizeof(swap_fxaa_constants), &swap_fxaa_constants);
+-            BindExternalComputePipeline(swap_post_effect == SwapPostEffect::kFxaaExtreme
+-                                            ? swap_fxaa_extreme_pipeline_
+-                                            : swap_fxaa_pipeline_);
++            const bool fxaa_extreme = swap_post_effect == SwapPostEffect::kFxaaExtreme;
++            if (use_grade) {
++              VkPipeline grade_pipeline =
++                  !use_fxaa ? swap_grade_pipeline_
++                            : (fxaa_extreme ? swap_fxaa_extreme_grade_pipeline_
++                                            : swap_fxaa_grade_pipeline_);
++              deferred_command_buffer_.CmdVkPushConstants(
++                  swap_grade_pipeline_layout_, VK_SHADER_STAGE_COMPUTE_BIT, 0,
++                  sizeof(swap_grade_constants), &swap_grade_constants);
++              BindExternalComputePipeline(grade_pipeline);
++            } else {
++              SwapFxaaConstants swap_fxaa_constants = {
++                  {guest_output_width, guest_output_height},
++                  {1.0f / float(guest_output_width), 1.0f / float(guest_output_height)}};
++              deferred_command_buffer_.CmdVkPushConstants(
++                  swap_fxaa_pipeline_layout_, VK_SHADER_STAGE_COMPUTE_BIT, 0,
++                  sizeof(swap_fxaa_constants), &swap_fxaa_constants);
++              BindExternalComputePipeline(fxaa_extreme ? swap_fxaa_extreme_pipeline_
++                                                       : swap_fxaa_pipeline_);
++            }
+             deferred_command_buffer_.CmdVkDispatch(group_count_x, group_count_y, 1);
+           }
+ 
+diff --git a/src/kernel/CMakeLists.txt b/src/kernel/CMakeLists.txt
+index 984b97d..8c9afc2 100644
+--- a/src/kernel/CMakeLists.txt
++++ b/src/kernel/CMakeLists.txt
+@@ -14,6 +14,7 @@ set(REXKERNEL_SOURCES
+     xam/xam_locale.cpp
+     xam/xam_msg.cpp
+     xam/xam_net.cpp
++    xam/ge_online.cpp
+     xam/xam_notify.cpp
+     xam/xam_nui.cpp
+     xam/xam_party.cpp
+diff --git a/src/kernel/xam/ge_online.cpp b/src/kernel/xam/ge_online.cpp
+new file mode 100644
+index 0000000..9672c6c
+--- /dev/null
++++ b/src/kernel/xam/ge_online.cpp
+@@ -0,0 +1,363 @@
++// GoldenEye recomp — online multiplayer client. See ge_online.h.
++
++#include "ge_online.h"
++#include "ge_online_protocol.h"
++
++#include <rex/platform.h>  // REX_PLATFORM_*
++#include <rex/cvar.h>
++#include <rex/logging.h>
++#include <rex/system/xsocket.h>
++
++#include <chrono>
++#include <cstdlib>
++#include <cstring>
++#include <string>
++
++#if REX_PLATFORM_WIN32
++#include <winsock2.h>
++#include <ws2tcpip.h>
++#else
++// macOS / Linux: BSD sockets.
++#include <arpa/inet.h>
++#include <cerrno>
++#include <netdb.h>
++#include <netinet/in.h>
++#include <sys/socket.h>
++#include <sys/time.h>
++#include <unistd.h>
++#endif
++
++namespace {
++#if REX_PLATFORM_WIN32
++using ge_sock_t = SOCKET;
++constexpr ge_sock_t kGeBadSocket = INVALID_SOCKET;
++inline int GeSockError() { return WSAGetLastError(); }
++inline void GeCloseSocket(ge_sock_t s) { closesocket(s); }
++inline uint64_t GeProcessId() { return static_cast<uint64_t>(GetCurrentProcessId()); }
++#else
++using ge_sock_t = int;
++constexpr ge_sock_t kGeBadSocket = -1;
++inline int GeSockError() { return errno; }
++inline void GeCloseSocket(ge_sock_t s) {
++  // shutdown() first so a recv() blocked on another thread returns promptly.
++  ::shutdown(s, SHUT_RDWR);
++  ::close(s);
++}
++inline uint64_t GeProcessId() { return static_cast<uint64_t>(::getpid()); }
++#endif
++inline uint64_t GeTickMs() {
++  return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
++                                   std::chrono::steady_clock::now().time_since_epoch())
++                                   .count());
++}
++}  // namespace
++
++REXCVAR_DEFINE_BOOL(ge_online_enable, false, "Online",
++                    "Route GoldenEye System Link multiplayer through the matchmaker/relay "
++                    "(online play). Off = normal behaviour.")
++    .lifecycle(rex::cvar::Lifecycle::kHotReload);
++
++REXCVAR_DEFINE_STRING(ge_online_server, "127.0.0.1", "Online",
++                      "Matchmaker/relay server address: an IP or hostname (e.g. your public "
++                      "server). 127.0.0.1 = localhost.");
++
++REXCVAR_DEFINE_INT32(ge_online_port, rex::kernel::xam::geonline::kServerPort, "Online",
++                     "Matchmaker/relay server UDP port (default 31000). Must match the port the "
++                     "host started the server with. A 'host:port' typed into ge_online_server "
++                     "overrides this.");
++
++namespace rex::kernel::xam {
++
++using namespace geonline;
++
++OnlineClient& OnlineClient::Get() {
++  static OnlineClient instance;
++  return instance;
++}
++
++bool OnlineClient::Enabled() { return REXCVAR_GET(ge_online_enable); }
++
++OnlineClient::~OnlineClient() { Shutdown(); }
++
++uint32_t OnlineClient::virtual_ip() {
++  std::lock_guard<std::mutex> lock(mutex_);
++  return virtual_ip_;
++}
++
++static void FillHeader(MsgHeader& h, MsgType type) {
++  h.magic = kMagic;
++  h.version = kProtocolVersion;
++  h.type = static_cast<uint8_t>(type);
++}
++
++void OnlineClient::EnsureStarted() {
++  {
++    std::lock_guard<std::mutex> lock(mutex_);
++    if (started_) {
++      return;
++    }
++    ge_sock_t s = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
++    if (s == kGeBadSocket) {
++      REXLOG_ERROR("[ge-online] control socket() failed: {}", GeSockError());
++      return;
++    }
++#if !REX_PLATFORM_WIN32
++    // Wake the receive loop periodically so it can notice shutdown.
++    timeval tv{};
++    tv.tv_sec = 0;
++    tv.tv_usec = 250000;
++    setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
++#endif
++    sockaddr_in srv{};
++    srv.sin_family = AF_INET;
++    srv.sin_port = htons(kServerPort);
++    srv.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
++    // Resolve the configured server. Accepts "host" or "host:port" (an IP or
++    // hostname; e.g. a playit.gg tunnel "xxxx.ply.gg:2721"). Default 127.0.0.1
++    // and port kServerPort (31000) for localhost play.
++    {
++      std::string host = REXCVAR_GET(ge_online_server);
++      int cfg_port = REXCVAR_GET(ge_online_port);
++      uint16_t port = (cfg_port > 0 && cfg_port < 65536) ? static_cast<uint16_t>(cfg_port)
++                                                         : static_cast<uint16_t>(kServerPort);
++      auto colon = host.rfind(':');
++      if (colon != std::string::npos) {
++        int p = std::atoi(host.c_str() + colon + 1);
++        if (p > 0 && p < 65536) {
++          port = static_cast<uint16_t>(p);
++        }
++        host = host.substr(0, colon);
++      }
++      srv.sin_port = htons(port);
++      if (!host.empty()) {
++        addrinfo hints{};
++        hints.ai_family = AF_INET;
++        hints.ai_socktype = SOCK_DGRAM;
++        addrinfo* res = nullptr;
++        if (getaddrinfo(host.c_str(), nullptr, &hints, &res) == 0 && res) {
++          srv.sin_addr = reinterpret_cast<sockaddr_in*>(res->ai_addr)->sin_addr;
++          freeaddrinfo(res);
++        } else {
++          REXLOG_ERROR("[ge-online] could not resolve server '{}', using loopback", host);
++        }
++      }
++      REXLOG_INFO("[ge-online] server {}:{}", host, port);
++    }
++    if (connect(s, reinterpret_cast<sockaddr*>(&srv), sizeof(srv)) != 0) {
++      REXLOG_ERROR("[ge-online] control connect() failed: {}", GeSockError());
++      GeCloseSocket(s);
++      return;
++    }
++    control_sock_ = static_cast<uintptr_t>(s);
++    session_id_ = (GeProcessId() << 32) ^ (GeTickMs() & 0xFFFFFFFFull) ^ 0x474531234ull;
++    started_ = true;
++    run_ = true;
++  }
++  recv_thread_ = std::thread([this] { RecvLoop(); });
++  heartbeat_thread_ = std::thread([this] { HeartbeatLoop(); });
++  {
++    // Request a virtual ip right away (don't wait for the first ~5s heartbeat) so
++    // XNetGetTitleXnAddr can hand the title its real vip before it builds its
++    // advertised session XNADDR.
++    std::lock_guard<std::mutex> lock(mutex_);
++    SendRegister(hosting_);
++  }
++  REXLOG_INFO("[ge-online] client started, session={:016X}", session_id_);
++}
++
++void OnlineClient::Shutdown() {
++  run_ = false;
++  {
++    std::lock_guard<std::mutex> lock(mutex_);
++    if (control_sock_ != ~uintptr_t(0)) {
++      GeCloseSocket(static_cast<ge_sock_t>(control_sock_));  // unblocks RecvLoop
++      control_sock_ = ~uintptr_t(0);
++    }
++    started_ = false;
++  }
++  if (recv_thread_.joinable()) recv_thread_.join();
++  if (heartbeat_thread_.joinable()) heartbeat_thread_.join();
++}
++
++bool OnlineClient::SendRaw(const void* data, int len) {
++  if (control_sock_ == ~uintptr_t(0)) {
++    return false;
++  }
++  return send(static_cast<ge_sock_t>(control_sock_), reinterpret_cast<const char*>(data), len,
++              0) == len;
++}
++
++void OnlineClient::SendRegister(bool is_host) {
++  RegisterMsg msg{};
++  FillHeader(msg.hdr, MsgType::kRegister);
++  msg.session.session_id = session_id_;
++  msg.session.virtual_ip = virtual_ip_;
++  msg.session.host_port = game_port_;
++  msg.session.gamemode = host_gamemode_;
++  msg.session.map = host_map_;
++  msg.session.max_players = host_max_;
++  msg.session.cur_players = host_cur_;
++  msg.session.is_host = is_host ? 1 : 0;
++  std::strncpy(msg.session.name, host_name_[0] ? host_name_ : "GoldenEye",
++               sizeof(msg.session.name) - 1);
++  SendRaw(&msg, sizeof(msg));
++}
++
++void OnlineClient::OnBind(rex::system::XSocket* match_socket, uint16_t port) {
++  EnsureStarted();
++  std::lock_guard<std::mutex> lock(mutex_);
++  sockets_by_port_[port] = match_socket;
++  game_port_ = port;  // last bound; advertised as the host port
++  SendRegister(hosting_);
++  REXLOG_INFO("[ge-online] peer registered (port {})", port);
++}
++
++void OnlineClient::OnCloseSocket(rex::system::XSocket* socket) {
++  std::lock_guard<std::mutex> lock(mutex_);
++  for (auto it = sockets_by_port_.begin(); it != sockets_by_port_.end();) {
++    if (it->second == socket) {
++      it = sockets_by_port_.erase(it);
++    } else {
++      ++it;
++    }
++  }
++}
++
++void OnlineClient::RegisterHost(uint32_t gamemode, uint32_t map, uint8_t max_players,
++                                uint8_t cur_players, const char* name) {
++  EnsureStarted();
++  std::lock_guard<std::mutex> lock(mutex_);
++  hosting_ = true;
++  host_gamemode_ = gamemode;
++  host_map_ = map;
++  host_max_ = max_players;
++  host_cur_ = cur_players;
++  std::strncpy(host_name_, name ? name : "GoldenEye", sizeof(host_name_) - 1);
++  SendRegister(true);
++  REXLOG_INFO("[ge-online] REGISTER host port={} mode={} {}/{}", game_port_, gamemode, cur_players,
++              max_players);
++}
++
++void OnlineClient::Unregister() {
++  std::lock_guard<std::mutex> lock(mutex_);
++  if (control_sock_ == ~uintptr_t(0)) {
++    return;
++  }
++  RegisterMsg msg{};
++  FillHeader(msg.hdr, MsgType::kUnregister);
++  msg.session.session_id = session_id_;
++  SendRaw(&msg, sizeof(msg));
++  hosting_ = false;
++}
++
++void OnlineClient::SendRelay(uint32_t dest_vip, uint16_t port, const uint8_t* data, uint16_t len) {
++  if (len > kMaxInner) {
++    len = kMaxInner;
++  }
++  std::lock_guard<std::mutex> lock(mutex_);
++  if (control_sock_ == ~uintptr_t(0)) {
++    return;
++  }
++  uint8_t buf[sizeof(RelayMsg) + kMaxInner];
++  auto* rm = reinterpret_cast<RelayMsg*>(buf);
++  FillHeader(rm->hdr, MsgType::kRelay);
++  rm->addr = dest_vip;  // 0 = broadcast
++  rm->src_port = port;  // unified deliver-to + source port
++  rm->inner_len = len;
++  std::memcpy(buf + sizeof(RelayMsg), data, len);
++  SendRaw(buf, static_cast<int>(sizeof(RelayMsg) + len));
++}
++
++void OnlineClient::RecvLoop() {
++  uint8_t buf[sizeof(RelayMsg) + kMaxInner + 64];
++  while (run_) {
++    ge_sock_t s;
++    {
++      std::lock_guard<std::mutex> lock(mutex_);
++      if (control_sock_ == ~uintptr_t(0)) {
++        break;
++      }
++      s = static_cast<ge_sock_t>(control_sock_);
++    }
++    int n = recv(s, reinterpret_cast<char*>(buf), sizeof(buf), 0);
++    if (n < static_cast<int>(sizeof(MsgHeader))) {
++      if (n <= 0 && !run_) {
++        break;
++      }
++      continue;
++    }
++    auto* hdr = reinterpret_cast<MsgHeader*>(buf);
++    if (hdr->magic != kMagic || hdr->version != kProtocolVersion) {
++      continue;
++    }
++    switch (static_cast<MsgType>(hdr->type)) {
++      case MsgType::kRegisterAck: {
++        if (n >= static_cast<int>(sizeof(RegisterMsg))) {
++          auto* m = reinterpret_cast<RegisterMsg*>(buf);
++          std::lock_guard<std::mutex> lock(mutex_);
++          if (virtual_ip_ == 0) {
++            virtual_ip_ = m->session.virtual_ip;
++            REXLOG_INFO("[ge-online] assigned virtual ip {}.{}.{}.{}", (virtual_ip_ >> 24) & 0xFF,
++                        (virtual_ip_ >> 16) & 0xFF, (virtual_ip_ >> 8) & 0xFF, virtual_ip_ & 0xFF);
++          }
++        }
++        break;
++      }
++      case MsgType::kRelayDeliver: {
++        if (n >= static_cast<int>(sizeof(RelayMsg))) {
++          auto* rm = reinterpret_cast<RelayMsg*>(buf);
++          uint16_t inner_len = rm->inner_len;
++          if (inner_len > kMaxInner ||
++              n < static_cast<int>(sizeof(RelayMsg)) + inner_len) {
++            break;
++          }
++          rex::system::XSocket* sock = nullptr;
++          {
++            std::lock_guard<std::mutex> lock(mutex_);
++            auto it = sockets_by_port_.find(rm->src_port);
++            if (it != sockets_by_port_.end()) {
++              sock = it->second;
++            }
++          }
++          if (sock) {
++            // Queue the inner packet onto the matching socket so WSARecvFrom
++            // returns it with the sender's virtual ip as the source address.
++            sock->QueuePacket(rm->addr, rm->src_port, buf + sizeof(RelayMsg), inner_len);
++          }
++        }
++        break;
++      }
++      default:
++        break;
++    }
++  }
++}
++
++void OnlineClient::HeartbeatLoop() {
++  while (run_) {
++    for (int i = 0; i < 50 && run_; ++i) {
++      std::this_thread::sleep_for(std::chrono::milliseconds(100));  // ~5s
++    }
++    if (!run_) {
++      break;
++    }
++    std::lock_guard<std::mutex> lock(mutex_);
++    if (control_sock_ != ~uintptr_t(0)) {
++      RegisterMsg msg{};
++      FillHeader(msg.hdr, MsgType::kHeartbeat);
++      msg.session.session_id = session_id_;
++      msg.session.virtual_ip = virtual_ip_;
++      msg.session.host_port = game_port_;
++      msg.session.gamemode = host_gamemode_;
++      msg.session.map = host_map_;
++      msg.session.max_players = host_max_;
++      msg.session.cur_players = host_cur_;
++      msg.session.is_host = hosting_ ? 1 : 0;
++      std::strncpy(msg.session.name, host_name_[0] ? host_name_ : "GoldenEye",
++                   sizeof(msg.session.name) - 1);
++      SendRaw(&msg, sizeof(msg));
++    }
++  }
++}
++
++}  // namespace rex::kernel::xam
+diff --git a/src/kernel/xam/ge_online.h b/src/kernel/xam/ge_online.h
+new file mode 100644
+index 0000000..ac3bcdb
+--- /dev/null
++++ b/src/kernel/xam/ge_online.h
+@@ -0,0 +1,81 @@
++// GoldenEye recomp — online multiplayer client.
++//
++// Bridges the game's emulated XNet (xam_net.cpp) to the localhost matchmaker +
++// relay. The game does LAN-broadcast discovery on port 1001; we route those
++// broadcasts (and the unicast replies) through the server so they cross
++// processes/machines, and deliver them into the match socket's packet queue.
++// Each instance gets a server-assigned VIRTUAL IP used as its peer identity.
++//
++// Gated entirely by the `ge_online_enable` cvar.
++
++#pragma once
++
++#include <cstdint>
++#include <mutex>
++#include <thread>
++#include <unordered_map>
++
++namespace rex::system {
++class XSocket;
++}
++
++namespace rex::kernel::xam {
++
++class OnlineClient {
++ public:
++  static OnlineClient& Get();
++  static bool Enabled();
++
++  void EnsureStarted();
++  void Shutdown();
++
++  // From bind(): register this instance as a peer (assigns a virtual ip) and
++  // remember the match socket so relayed packets can be queued onto it.
++  void OnBind(rex::system::XSocket* match_socket, uint16_t port);
++  void OnCloseSocket(rex::system::XSocket* socket);
++
++  // Host advertises a session (from XNetQosListen).
++  void RegisterHost(uint32_t gamemode, uint32_t map, uint8_t max_players, uint8_t cur_players,
++                    const char* name);
++  void Unregister();
++
++  // This instance's assigned virtual ip (host order); 0 until the server acks.
++  uint32_t virtual_ip();
++
++  // Relay a game packet sent from a socket bound to `port`. dest_vip == 0 =>
++  // broadcast to all peers. Delivered to the peer's socket on the same port.
++  void SendRelay(uint32_t dest_vip, uint16_t port, const uint8_t* data, uint16_t len);
++
++ private:
++  OnlineClient() = default;
++  ~OnlineClient();
++
++  void RecvLoop();
++  void HeartbeatLoop();
++  void SendRegister(bool is_host);
++  bool SendRaw(const void* data, int len);
++
++  std::mutex mutex_;
++  uintptr_t control_sock_ = ~uintptr_t(0);
++  bool started_ = false;
++  uint64_t session_id_ = 0;
++  uint32_t virtual_ip_ = 0;
++  uint16_t game_port_ = 0;
++
++  bool hosting_ = false;
++  uint32_t host_gamemode_ = 0;
++  uint32_t host_map_ = 0;
++  uint8_t host_max_ = 4;
++  uint8_t host_cur_ = 1;
++  char host_name_[32] = {};
++
++  // All match sockets, keyed by bound port (1001 = discovery UDP, 1000 = game
++  // VDP). Relayed packets are queued onto the socket matching the dest port.
++  std::unordered_map<uint16_t, rex::system::XSocket*> sockets_by_port_;
++
++  std::thread recv_thread_;
++  std::thread heartbeat_thread_;
++  volatile bool run_ = false;
++};
++
++}  // namespace rex::kernel::xam
+diff --git a/src/kernel/xam/ge_online_protocol.h b/src/kernel/xam/ge_online_protocol.h
+new file mode 100644
+index 0000000..947905c
+--- /dev/null
++++ b/src/kernel/xam/ge_online_protocol.h
+@@ -0,0 +1,82 @@
++// GoldenEye recomp — online multiplayer wire protocol (CLIENT copy).
++//
++// MUST stay byte-identical to the server's copy at
++// C:\Users\jonat\Desktop\GoldeneyeServer\src\ge_net_protocol.h. Plain UDP,
++// little-endian, packed structs.
++//
++// Two jobs: (1) session DIRECTORY (hosts register, clients query), (2) packet
++// RELAY so emulated LAN broadcast/unicast crosses processes/machines. Each
++// instance gets a server-assigned VIRTUAL IP used as its peer identity.
++
++#pragma once
++#include <cstdint>
++
++namespace rex::kernel::xam::geonline {
++
++constexpr uint32_t kMagic = 0x32304547;  // "GE02" (bumped: protocol w/ relay)
++constexpr uint16_t kServerPort = 31000;
++constexpr uint32_t kProtocolVersion = 2;
++constexpr uint32_t kSessionTimeoutSec = 15;
++
++enum class MsgType : uint8_t {
++  kRegister = 1,     // peer -> server: announce/refresh (host session OR just a peer)
++  kUnregister = 2,
++  kHeartbeat = 3,
++  kQuery = 4,        // client -> server: list advertised host sessions
++  kList = 5,         // server -> client
++  kRegisterAck = 6,  // server -> peer: assigns virtual_ip (in session.virtual_ip)
++  kRelay = 7,        // peer -> server: relay an inner game packet
++  kRelayDeliver = 8, // server -> peer: a relayed inner game packet
++};
++
++#pragma pack(push, 1)
++
++struct MsgHeader {
++  uint32_t magic;
++  uint32_t version;
++  uint8_t type;
++};
++
++struct SessionInfo {
++  uint64_t session_id;
++  uint32_t virtual_ip;  // server-assigned peer identity (host order); 0 until acked
++  uint32_t host_ip;     // real source IP (network order); server fills it
++  uint16_t host_port;   // host's game UDP port (nominal)
++  uint32_t gamemode;
++  uint32_t map;
++  uint8_t max_players;
++  uint8_t cur_players;
++  uint8_t is_host;  // 1 = advertised host session, 0 = plain peer
++  char name[32];
++};
++
++struct RegisterMsg {
++  MsgHeader hdr;
++  SessionInfo session;
++};
++
++struct QueryMsg {
++  MsgHeader hdr;
++};
++
++struct ListMsg {
++  MsgHeader hdr;
++  uint16_t count;
++  // SessionInfo entries[count] follow.
++};
++
++// Relay: kRelay (peer->server) sets addr = destination virtual IP (0 = broadcast
++// to all other peers). kRelayDeliver (server->peer) sets addr = SOURCE virtual
++// IP. inner_len bytes of opaque game data follow the header.
++struct RelayMsg {
++  MsgHeader hdr;
++  uint32_t addr;        // dest vip (kRelay) or src vip (kRelayDeliver), host order
++  uint16_t src_port;    // sender's nominal game port
++  uint16_t inner_len;
++  // uint8_t inner[inner_len] follows.
++};
++constexpr uint16_t kMaxInner = 1408;
++
++#pragma pack(pop)
++
++}  // namespace rex::kernel::xam::geonline
+diff --git a/src/kernel/xam/xam_net.cpp b/src/kernel/xam/xam_net.cpp
+index 6e9ac8a..4fda8c4 100644
+--- a/src/kernel/xam/xam_net.cpp
++++ b/src/kernel/xam/xam_net.cpp
+@@ -12,7 +12,9 @@
+ // Disable warnings about unused parameters for kernel functions
+ #pragma GCC diagnostic ignored "-Wunused-parameter"
+ 
++#include <chrono>
+ #include <cstring>
++#include <thread>
+ 
+ #if REX_PLATFORM_MAC
+ #include <sys/select.h>
+@@ -33,6 +35,8 @@
+ #include <rex/system/xthread.h>
+ #include <rex/system/xtypes.h>
+ 
++#include "ge_online.h"
++
+ #if REX_PLATFORM_WIN32
+ // NOTE: must be included last as it expects windows.h to already be included.
+ #define _WINSOCK_DEPRECATED_NO_WARNINGS  // inet_addr
+@@ -309,6 +313,30 @@ u32 NetDll_WSARecvFrom_entry(u32 caller, u32 socket, ppc_ptr_t<XWSABUF> buffers_
+     //}
+   }
+ 
++  // Online: pull a relayed packet from the socket's queue (filled by the relay
++  // thread). Reports the sender's virtual ip as the source.
++  if (OnlineClient::Enabled() && buffer_count > 0) {
++    auto sock = REX_KERNEL_OBJECTS()->LookupObject<XSocket>(socket);
++    if (sock) {
++      XWSABUF b0 = buffers_ptr[0];
++      uint8_t* dst = REX_KERNEL_MEMORY()->TranslateVirtual<uint8_t*>(b0.buf_ptr);
++      N_XSOCKADDR_IN from{};
++      uint32_t fromlen = sizeof(from);
++      int ret = sock->RecvFrom(dst, b0.len, 0, &from, &fromlen);
++      if (ret >= 0) {
++        if (num_bytes_recv) *num_bytes_recv = ret;
++        if (from_addr) {
++          from_addr->sin_family = 2;
++          from_addr->sin_addr = from.sin_addr;
++          from_addr->sin_port = from.sin_port;
++        }
++        return 0;
++      }
++      XThread::SetLastError(0x2733);  // WSAEWOULDBLOCK
++      return -1;
++    }
++  }
++
+   // we're not going to be receiving packets any time soon
+   // return error so we don't wait on that - Cancerous
+   return -1;
+@@ -346,6 +374,24 @@ u32 NetDll_WSASendTo_entry(u32 caller, u32 socket_handle, ppc_ptr_t<XWSABUF> buf
+   }
+ 
+   N_XSOCKADDR_IN native_to(to_ptr);
++  if (OnlineClient::Enabled()) {
++    uint32_t dest_ip = native_to.sin_addr;  // host order
++    uint16_t dest_port = native_to.sin_port;
++    if (dest_ip == 0xFFFFFFFFu) {
++      // LAN broadcast discovery -> relay to all peers.
++      OnlineClient::Get().SendRelay(0, dest_port, combined_buffer_mem.data(),
++                                    static_cast<uint16_t>(combined_buffer_size));
++      if (num_bytes_sent) *num_bytes_sent = combined_buffer_size;
++      return 0;
++    }
++    if ((dest_ip & 0xFF000000u) == 0x0A000000u) {
++      // Unicast to a peer's virtual ip -> relay to that peer.
++      OnlineClient::Get().SendRelay(dest_ip, dest_port, combined_buffer_mem.data(),
++                                    static_cast<uint16_t>(combined_buffer_size));
++      if (num_bytes_sent) *num_bytes_sent = combined_buffer_size;
++      return 0;
++    }
++  }
+   socket->SendTo(combined_buffer_mem.data(), combined_buffer_size, flags, &native_to, to_len);
+ 
+   // TODO: Instantly complete overlapped
+@@ -436,9 +482,25 @@ struct XnAddrStatus {
+ };
+ 
+ u32 NetDll_XNetGetTitleXnAddr_entry(u32 caller, ppc_ptr_t<XNADDR> addr_ptr) {
+-  // Just return a loopback address atm.
+-  addr_ptr->ina.s_addr = htonl(INADDR_LOOPBACK);
+-  addr_ptr->inaOnline.s_addr = 0;
++  uint32_t my_ip = INADDR_LOOPBACK;
++  if (OnlineClient::Enabled()) {
++    auto& oc = OnlineClient::Get();
++    oc.EnsureStarted();
++    uint32_t vip = oc.virtual_ip();
++    // The matchmaker assigns the vip asynchronously; block briefly so the title's
++    // advertised session XNADDR carries the real vip (10.0.0.x) instead of
++    // loopback -- otherwise peers resolve us to 127.0.0.1 and the join handshake
++    // never reaches us. On localhost the ack arrives in well under 50ms.
++    for (int i = 0; i < 200 && vip == 0; ++i) {
++      std::this_thread::sleep_for(std::chrono::milliseconds(5));
++      vip = oc.virtual_ip();
++    }
++    if (vip != 0) {
++      my_ip = vip;  // this instance's server-assigned virtual ip = its identity
++    }
++  }
++  addr_ptr->ina.s_addr = htonl(my_ip);
++  addr_ptr->inaOnline.s_addr = htonl(my_ip);
+   addr_ptr->wPortOnline = 0;
+ 
+   // TODO(gibbed): A proper mac address.
+@@ -453,6 +515,9 @@ u32 NetDll_XNetGetTitleXnAddr_entry(u32 caller, ppc_ptr_t<XNADDR> addr_ptr) {
+   // "Mac address is a poor solution because you can't have multiple connections
+   // from the same system"
+   std::memset(addr_ptr->abEnet, 0xCC, 6);
++  // Make the MAC differ per instance (derived from the virtual ip).
++  addr_ptr->abEnet[4] = (my_ip >> 8) & 0xFF;
++  addr_ptr->abEnet[5] = my_ip & 0xFF;
+ 
+   std::memset(addr_ptr->abOnline, 0, 20);
+ 
+@@ -479,22 +544,48 @@ void NetDll_XNetInAddrToString_entry(u32 caller, u32 in_addr, mapped_string stri
+ // This converts a XNet address to an IN_ADDR. The IN_ADDR is used for
+ // subsequent socket calls (like a handle to a XNet address)
+ u32 NetDll_XNetXnAddrToInAddr_entry(u32 caller, ppc_ptr_t<XNADDR> xn_addr, mapped_void xid,
+-                                    mapped_void in_addr) {
++                                    mapped_u32 in_addr) {
++  // Online: hand back the peer's virtual ip (carried in its XNADDR.ina) as the
++  // IN_ADDR the game will sendto -- our WSASendTo relays virtual ips.
++  if (OnlineClient::Enabled() && xn_addr && in_addr) {
++    uint32_t vip_host = ntohl(xn_addr->ina.s_addr);  // ina is network order
++    *in_addr = vip_host;  // mapped_u32 stores big-endian => network-order vip
++    return 0;
++  }
+   return 1;
+ }
+ 
+-// Does the reverse of the above.
+-// FIXME: Arguments may not be correct.
+-u32 NetDll_XNetInAddrToXnAddr_entry(u32 caller, mapped_void in_addr, ppc_ptr_t<XNADDR> xn_addr,
++// VDP secure-channel setup. For our plaintext relay there is nothing to connect;
++// report success / connected so the title proceeds to exchange game data.
++u32 NetDll_XNetConnect_entry(u32 caller, u32 in_addr) { return 0; }
++
++u32 NetDll_XNetGetConnectStatus_entry(u32 caller, u32 in_addr) {
++  // 2 = XNET_CONNECT_STATUS_CONNECTED
++  return OnlineClient::Enabled() ? 2u : 0u;
++}
++
++// Reverse of XnAddrToInAddr: rebuild an XNADDR from a virtual ip. NOTE: the
++// IN_ADDR is passed BY VALUE (a u32), not a pointer -- do NOT dereference it (the
++// value 0x0a0000xx would be translated as a guest pointer and crash).
++u32 NetDll_XNetInAddrToXnAddr_entry(u32 caller, u32 in_addr, ppc_ptr_t<XNADDR> xn_addr,
+                                     mapped_void xid) {
++  if (OnlineClient::Enabled() && xn_addr) {
++    uint32_t vip_host = in_addr;  // host-order vip (matches XnAddrToInAddr output)
++    xn_addr->ina.s_addr = htonl(vip_host);
++    xn_addr->inaOnline.s_addr = htonl(vip_host);
++    xn_addr->wPortOnline = 0;
++    std::memset(xn_addr->abEnet, 0xCC, 6);
++    xn_addr->abEnet[4] = (vip_host >> 8) & 0xFF;
++    xn_addr->abEnet[5] = vip_host & 0xFF;
++    std::memset(xn_addr->abOnline, 0, 20);
++    return 0;
++  }
+   return 1;
+ }
+ 
+ // https://www.google.com/patents/WO2008112448A1?cl=en
+ // Reserves a port for use by system link
+-u32 NetDll_XNetSetSystemLinkPort_entry(u32 caller, u32 port) {
+-  return 1;
+-}
++u32 NetDll_XNetSetSystemLinkPort_entry(u32 caller, u32 port) { return 1; }
+ 
+ // https://github.com/ILOVEPIE/Cxbx-Reloaded/blob/master/src/CxbxKrnl/EmuXOnline.h#L39
+ struct XEthernetStatus {
+@@ -534,6 +625,8 @@ u32 NetDll_XNetDnsRelease_entry(u32 caller, ppc_ptr_t<XNDNS> dns) {
+ }
+ 
+ u32 NetDll_XNetQosServiceLookup_entry(u32 caller, u32 flags, u32 event_handle, mapped_u32 pqos) {
++  // (Discovery is done via broadcast relay + WSARecvFrom, not QoS, for System
++  // Link. This QoS path stays a benign stub.)
+   // Set pqos as some games will try accessing it despite non-successful result
+   if (pqos) {
+     auto qos_guest = REX_KERNEL_MEMORY()->SystemHeapAlloc(sizeof(XNQOS));
+@@ -559,6 +652,13 @@ u32 NetDll_XNetQosRelease_entry(u32 caller, ppc_ptr_t<XNQOS> qos) {
+ 
+ u32 NetDll_XNetQosListen_entry(u32 caller, mapped_void id, mapped_void data, u32 data_size, u32 r7,
+                                u32 flags) {
++  // Online: a host advertising its session. Register it with the matchmaker so
++  // searchers can find it. (Gamemode/map/player counts are placeholders for now;
++  // pulled from the real XSession state in a later pass.)
++  if (OnlineClient::Enabled()) {
++    OnlineClient::Get().RegisterHost(0, 0, 4, 1, "GoldenEye");
++    return 0;  // success, so the game proceeds as if advertising
++  }
+   return X_ERROR_FUNCTION_FAILED;
+ }
+ 
+@@ -603,6 +703,10 @@ u32 NetDll_closesocket_entry(u32 caller, u32 socket_handle) {
+     return -1;
+   }
+ 
++  if (OnlineClient::Enabled()) {
++    OnlineClient::Get().OnCloseSocket(socket.get());
++  }
++
+   // TODO: Absolutely delete this object. It is no longer valid after calling
+   // closesocket.
+   socket->Close();
+@@ -670,12 +774,29 @@ u32 NetDll_bind_entry(u32 caller, u32 socket_handle, ppc_ptr_t<XSOCKADDR_IN> nam
+   }
+ 
+   N_XSOCKADDR_IN native_name(name);
++#if REX_PLATFORM_WIN32
++  if (OnlineClient::Enabled()) {
++    // Let two local instances "bind" the same system-link port -- real match
++    // transport goes through the relay, not this OS socket.
++    int yes = 1;
++    setsockopt(static_cast<SOCKET>(socket->native_handle()), SOL_SOCKET, SO_REUSEADDR,
++               reinterpret_cast<char*>(&yes), sizeof(yes));
++  }
++#endif
+   X_STATUS status = socket->Bind(&native_name, namelen);
+-  if (XFAILED(status)) {
++  if (XFAILED(status) && !OnlineClient::Enabled()) {
+     XThread::SetLastError(xboxkrnl::xeRtlNtStatusToDosError(status));
+     return -1;
+   }
+ 
++  // Online: register this instance as a peer + remember the match socket so
++  // relayed packets get queued onto it. Succeed even if the OS bind collided.
++  if (OnlineClient::Enabled()) {
++    uint16_t port = native_name.sin_port;
++    OnlineClient::Get().OnBind(socket.get(), port);
++    return 0;
++  }
++
+   return 0;
+ }
+ 
+@@ -936,11 +1057,55 @@ void NetDll_WSASetLastError_entry(u32 error_code) {
+   XThread::SetLastError(error_code);
+ }
+ 
++// XNKID = 8-byte secure session key id, XNKEY = 16-byte key. We don't actually
++// encrypt traffic (localhost peers exchange plaintext), but the title spins
++// forever calling XNetCreateKey until it gets a valid (non-zero) key back, so we
++// must fill these and return success.
++struct XNKID_t {
++  uint8_t ab[8];
++};
++struct XNKEY_t {
++  uint8_t ab[16];
++};
++
++static uint8_t GeKeyByte() {
++  static uint32_t seed = 0x9E3779B9u;
++  seed = seed * 1664525u + 1013904223u;
++  return static_cast<uint8_t>(seed >> 24);
++}
++
++u32 NetDll_XNetCreateKey_entry(u32 caller, ppc_ptr_t<XNKID_t> pxnkid, ppc_ptr_t<XNKEY_t> pxnkey) {
++  if (pxnkid) {
++    for (int i = 0; i < 8; ++i) {
++      pxnkid->ab[i] = GeKeyByte();
++    }
++    pxnkid->ab[0] |= 0x01;  // ensure non-zero
++  }
++  if (pxnkey) {
++    for (int i = 0; i < 16; ++i) {
++      pxnkey->ab[i] = GeKeyByte();
++    }
++  }
++  return 0;
++}
++
++u32 NetDll_XNetRegisterKey_entry(u32 caller, ppc_ptr_t<XNKID_t> pxnkid, ppc_ptr_t<XNKEY_t> pxnkey) {
++  // No real registration needed for plaintext localhost play.
++  return 0;
++}
++
++u32 NetDll_XNetUnregisterKey_entry(u32 caller, ppc_ptr_t<XNKID_t> pxnkid) { return 0; }
++
+ }  // namespace xam
+ }  // namespace kernel
+ }  // namespace rex
+ 
+ REX_EXPORT(__imp__NetDll_XNetStartup, rex::kernel::xam::NetDll_XNetStartup_entry)
++REX_EXPORT(__imp__NetDll_XNetCreateKey, rex::kernel::xam::NetDll_XNetCreateKey_entry)
++REX_EXPORT(__imp__NetDll_XNetConnect, rex::kernel::xam::NetDll_XNetConnect_entry)
++REX_EXPORT(__imp__NetDll_XNetGetConnectStatus, rex::kernel::xam::NetDll_XNetGetConnectStatus_entry)
++REX_EXPORT(__imp__NetDll_XNetRegisterKey, rex::kernel::xam::NetDll_XNetRegisterKey_entry)
++REX_EXPORT(__imp__NetDll_XNetUnregisterKey, rex::kernel::xam::NetDll_XNetUnregisterKey_entry)
+ REX_EXPORT(__imp__NetDll_XNetCleanup, rex::kernel::xam::NetDll_XNetCleanup_entry)
+ REX_EXPORT(__imp__NetDll_XNetGetOpt, rex::kernel::xam::NetDll_XNetGetOpt_entry)
+ REX_EXPORT(__imp__NetDll_XNetRandom, rex::kernel::xam::NetDll_XNetRandom_entry)
+@@ -1033,25 +1198,20 @@ REX_EXPORT_STUB(__imp__NetDll_XHttpSetStatusCallback);
+ REX_EXPORT_STUB(__imp__NetDll_XHttpShutdown);
+ REX_EXPORT_STUB(__imp__NetDll_XHttpStartup);
+ REX_EXPORT_STUB(__imp__NetDll_XHttpWriteData);
+-REX_EXPORT_STUB(__imp__NetDll_XNetConnect);
+-REX_EXPORT_STUB(__imp__NetDll_XNetCreateKey);
+ REX_EXPORT_STUB(__imp__NetDll_XNetDnsReverseLookup);
+ REX_EXPORT_STUB(__imp__NetDll_XNetDnsReverseRelease);
+ REX_EXPORT_STUB(__imp__NetDll_XNetGetBroadcastVersionStatus);
+-REX_EXPORT_STUB(__imp__NetDll_XNetGetConnectStatus);
+ REX_EXPORT_STUB(__imp__NetDll_XNetGetSystemLinkPort);
+ REX_EXPORT_STUB(__imp__NetDll_XNetGetXnAddrPlatform);
+ REX_EXPORT_STUB(__imp__NetDll_XNetInAddrToServer);
+ REX_EXPORT_STUB(__imp__NetDll_XNetQosGetListenStats);
+ REX_EXPORT_STUB(__imp__NetDll_XNetQosLookup);
+-REX_EXPORT_STUB(__imp__NetDll_XNetRegisterKey);
+ REX_EXPORT_STUB(__imp__NetDll_XNetReplaceKey);
+ REX_EXPORT_STUB(__imp__NetDll_XNetServerToInAddr);
+ REX_EXPORT_STUB(__imp__NetDll_XNetSetOpt);
+ REX_EXPORT_STUB(__imp__NetDll_XNetStartupEx);
+ REX_EXPORT_STUB(__imp__NetDll_XNetTsAddrToInAddr);
+ REX_EXPORT_STUB(__imp__NetDll_XNetUnregisterInAddr);
+-REX_EXPORT_STUB(__imp__NetDll_XNetUnregisterKey);
+ REX_EXPORT_STUB(__imp__NetDll_XmlDownloadContinue);
+ REX_EXPORT_STUB(__imp__NetDll_XmlDownloadGetParseTime);
+ REX_EXPORT_STUB(__imp__NetDll_XmlDownloadGetReceivedDataSize);
+diff --git a/src/kernel/xboxkrnl/xboxkrnl_module.cpp b/src/kernel/xboxkrnl/xboxkrnl_module.cpp
+index dcb3af6..10b111e 100644
+--- a/src/kernel/xboxkrnl/xboxkrnl_module.cpp
++++ b/src/kernel/xboxkrnl/xboxkrnl_module.cpp
+@@ -187,13 +187,21 @@ XboxkrnlModule::XboxkrnlModule(Runtime* emulator, KernelState* kernel_state)
+   uint32_t pKeTimeStampBundle = memory_->SystemHeapAlloc(24);
+   auto lpKeTimeStampBundle = memory_->TranslateVirtual(pKeTimeStampBundle);
+   export_resolver_->SetVariableMapping("xboxkrnl.exe", 0x00AD, pKeTimeStampBundle);
+-  memory::store_and_swap<uint64_t>(lpKeTimeStampBundle + 0, 0);
+-  memory::store_and_swap<uint64_t>(lpKeTimeStampBundle + 8, 0);
++  // +0 InterruptTime (100ns units), +8 SystemTime, +16 TickCount (ms), +20.
++  // Stock left +0/+8 at zero forever; GoldenEye reads InterruptTime/SystemTime
++  // and stalls if they never advance, so tick all three here and in the timer.
++  memory::store_and_swap<uint64_t>(lpKeTimeStampBundle + 0,
++                                   chrono::Clock::QueryGuestUptimeMillis() * 10000ull);
++  memory::store_and_swap<uint64_t>(lpKeTimeStampBundle + 8, chrono::Clock::QueryGuestSystemTime());
+   memory::store_and_swap<uint32_t>(lpKeTimeStampBundle + 16,
+                                    chrono::Clock::QueryGuestUptimeMillis());
+   memory::store_and_swap<uint32_t>(lpKeTimeStampBundle + 20, 0);
+   timestamp_timer_ = rex::thread::HighResolutionTimer::CreateRepeating(
+       std::chrono::milliseconds(1), [lpKeTimeStampBundle]() {
++        memory::store_and_swap<uint64_t>(lpKeTimeStampBundle + 0,
++                                         chrono::Clock::QueryGuestUptimeMillis() * 10000ull);
++        memory::store_and_swap<uint64_t>(lpKeTimeStampBundle + 8,
++                                         chrono::Clock::QueryGuestSystemTime());
+         memory::store_and_swap<uint32_t>(lpKeTimeStampBundle + 16,
+                                          chrono::Clock::QueryGuestUptimeMillis());
+       });
+diff --git a/src/kernel/xboxkrnl/xboxkrnl_threading.cpp b/src/kernel/xboxkrnl/xboxkrnl_threading.cpp
+index 57fd161..deb12fe 100644
+--- a/src/kernel/xboxkrnl/xboxkrnl_threading.cpp
++++ b/src/kernel/xboxkrnl/xboxkrnl_threading.cpp
+@@ -16,10 +16,12 @@
+ #include <atomic>
+ #include <chrono>
+ #include <memory>
++#include <mutex>
+ #include <vector>
+ 
+ #include <rex/chrono/clock.h>
+ #include <rex/dbg.h>
++#include <rex/gpu_stall_recovery.h>
+ #include <rex/kernel/xboxkrnl/private.h>
+ #include <rex/kernel/xboxkrnl/threading.h>
+ #include <rex/logging.h>
+@@ -39,6 +41,17 @@
+ #include <rex/thread/atomic.h>
+ #include <rex/thread/mutex.h>
+ 
++// --- GPU render-thread wakeup protection (see rex/gpu_stall_recovery.h) ---
++namespace rex::gpu_recovery {
++namespace {
++thread_local bool t_in_gpu_isr = false;
++}  // namespace
++
++void EnterGpuIsr() { t_in_gpu_isr = true; }
++void ExitGpuIsr() { t_in_gpu_isr = false; }
++bool InGpuIsr() { return t_in_gpu_isr; }
++}  // namespace rex::gpu_recovery
++
+ namespace rex::kernel::xboxkrnl {
+ using namespace rex::system;
+ using rex::runtime::current_ppc_context;
+@@ -469,6 +482,14 @@ uint32_t xeKeSetEvent(X_KEVENT* event_ptr, uint32_t increment, uint32_t wait) {
+     return 0;
+   }
+ 
++  // If this Set happens inside the GPU completion interrupt, it's the render
++  // thread's wakeup. Mark the event so a racing KeResetEvent can't drop this
++  // Set before the render thread's Wait consumes it (else the render thread
++  // hangs forever -> visual freeze). See XEvent::Set / Reset.
++  if (rex::gpu_recovery::InGpuIsr()) {
++    ev->MarkRenderEvent();
++  }
++
+   return ev->Set(increment, !!wait);
+ }
+ 
+@@ -827,6 +848,25 @@ uint32_t xeKeWaitForSingleObject(void* object_ptr, uint32_t wait_reason, uint32_
+     return X_STATUS_ABANDONED_WAIT_0;
+   }
+ 
++  // GoldenEye GPU render-worker deadlock guard. Threads whose guest entry is
++  // sub_821A4A68 are the deferred GPU command workers. Their lock-free hand-off
++  // with the GPU interrupt was written for the 360's single-core model (CPU2's
++  // thread and CPU2's GPU interrupt interleave on ONE core); under emulation they
++  // run truly in parallel on separate host cores, so under load a wakeup can be
++  // lost and the worker is left on an INFINITE wait -> it never resubmits, the
++  // command ring drains, and the screen freezes while everything else keeps
++  // running. The worker resubmits from its OWN wait-timeout path, so we never let
++  // it wait forever: turn an infinite wait into the worker's normal ~30ms timeout
++  // so any lost wakeup self-heals within 30ms. Affects only these worker threads.
++  uint64_t capped_timeout;
++  if (!timeout_ptr) {
++    auto* cur = XThread::GetCurrentThread();
++    if (cur && cur->creation_params()->start_address == 0x821A4A68u) {
++      capped_timeout = static_cast<uint64_t>(static_cast<int64_t>(-300000));  // -30ms (NT 100ns units)
++      timeout_ptr = &capped_timeout;
++    }
++  }
++
+   X_STATUS result = object->Wait(wait_reason, processor_mode, alertable, timeout_ptr);
+ 
+   if (alertable && result == X_STATUS_USER_APC) {
+diff --git a/src/kernel/xboxkrnl/xboxkrnl_video.cpp b/src/kernel/xboxkrnl/xboxkrnl_video.cpp
+index 642f7ff..e120e3a 100644
+--- a/src/kernel/xboxkrnl/xboxkrnl_video.cpp
++++ b/src/kernel/xboxkrnl/xboxkrnl_video.cpp
+@@ -17,6 +17,7 @@
+ #include <string>
+ 
+ #include <rex/cvar.h>
++#include <rex/graphics/command_processor.h>
+ #include <rex/graphics/pipeline/texture/info.h>
+ #include <rex/graphics/register_file.h>
+ #include <rex/graphics/video_mode_util.h>
+@@ -496,6 +497,14 @@ void VdSwap_entry(mapped_void buffer_ptr,      // ptr into primary ringbuffer
+   for (uint32_t i = offset; i < 64; i++) {
+     dwords[i] = xenos::MakePacketType2();
+   }
++
++  // NOTE: do NOT kick the ring write pointer here. GoldenEye writes
++  // CP_RB_WPTR itself via GPU MMIO (verified: the register advances 0x51,
++  // 0xC9, 0x101... through the fault-dispatched WriteRegister path), exactly
++  // like other titles. A previous experiment force-advanced WPTR from here
++  // ("KickSwap") with math that mis-assumed this buffer lives inside the
++  // primary ring; it does not (separate command buffer), so the CP was driven
++  // into garbage packets -- corrupted GPU state and crashes.
+ }
+ 
+ void RegisterVideoExports(rex::runtime::ExportResolver* export_resolver,
+diff --git a/src/rexglue/CMakeLists.txt b/src/rexglue/CMakeLists.txt
+index cdb9b9f..5199de2 100644
+--- a/src/rexglue/CMakeLists.txt
++++ b/src/rexglue/CMakeLists.txt
+@@ -5,6 +5,7 @@ add_executable(rexglue
+     ui/ui.cpp
+     ui/progress.cpp
+     commands/codegen_command.cpp
++    commands/extract_command.cpp
+     commands/init_command.cpp
+     commands/test_recompiler.cpp
+     commands/project_scan.cpp
+diff --git a/src/rexglue/commands/extract_command.cpp b/src/rexglue/commands/extract_command.cpp
+new file mode 100644
+index 0000000..3da5a08
+--- /dev/null
++++ b/src/rexglue/commands/extract_command.cpp
+@@ -0,0 +1,165 @@
++/**
++ * @file        rexglue/commands/extract_command.cpp
++ * @brief       Extract an Xbox 360 STFS package (LIVE/PIRS/CON) to a folder
++ *
++ * XBLA titles ship as a single extensionless STFS package (the file under
++ * <title id>/000D0000/). Emulators mount it directly, but the recompiler needs
++ * the loose files (default.xex + data). This dumps every file with the SDK's
++ * own STFS reader (ported from Xenia, the same code the runtime mounts with).
++ *
++ *   rexglue extract <package> <output_dir>
++ */
++
++#include "extract_command.h"
++
++#include <algorithm>
++#include <cstdio>
++#include <filesystem>
++#include <memory>
++#include <queue>
++#include <span>
++#include <string>
++#include <vector>
++
++#include <CLI/CLI.hpp>
++#include <fmt/format.h>
++
++#include <rex/filesystem.h>
++#include <rex/filesystem/devices/stfs_container_device.h>
++#include <rex/filesystem/entry.h>
++#include <rex/filesystem/file.h>
++#include <rex/logging.h>
++#include <rex/result.h>
++
++namespace rexglue::cli {
++
++using rex::Err;
++using rex::ErrorCategory;
++using rex::Result;
++using rex::X_STATUS;
++
++namespace fs = std::filesystem;
++
++namespace {
++
++struct ExtractArgs {
++  std::string package_path;
++  std::string output_dir;
++};
++
++Result<void> ExtractPackage(const fs::path& package, const fs::path& out_dir) {
++  std::error_code ec;
++  if (!fs::is_regular_file(package, ec)) {
++    return Err<void>(ErrorCategory::NotFound,
++                     fmt::format("Package not found: {}", package.string()));
++  }
++
++  auto device = std::make_unique<rex::filesystem::StfsContainerDevice>("", package);
++  if (!device->Initialize()) {
++    return Err<void>(ErrorCategory::Format,
++                     fmt::format("{} is not a readable STFS (LIVE/PIRS/CON) package",
++                                 package.string()));
++  }
++
++  fs::create_directories(out_dir, ec);
++
++  std::queue<rex::filesystem::Entry*> queue;
++  if (auto* root = device->ResolvePath("/")) {
++    queue.push(root);
++  }
++
++  std::vector<uint8_t> buffer(8u << 20);  // 8 MiB copy chunks
++  size_t files = 0;
++  uint64_t bytes = 0;
++  while (!queue.empty()) {
++    auto* entry = queue.front();
++    queue.pop();
++    for (auto& child : entry->children()) {
++      queue.push(child.get());
++    }
++    if (entry->path().empty() || entry->path() == "/") {
++      continue;
++    }
++
++    std::string rel = entry->path();
++    std::replace(rel.begin(), rel.end(), '\\', '/');  // STFS paths use '\\' separators
++    while (!rel.empty() && rel.front() == '/') rel.erase(rel.begin());
++    const fs::path dest = out_dir / rex::to_path(rel);
++
++    if (entry->attributes() & rex::filesystem::kFileAttributeDirectory) {
++      fs::create_directories(dest, ec);
++      continue;
++    }
++    fs::create_directories(dest.parent_path(), ec);
++
++    rex::filesystem::File* in_file = nullptr;
++    if (entry->Open(rex::filesystem::FileAccess::kFileReadData, &in_file) != X_STATUS_SUCCESS ||
++        !in_file) {
++      return Err<void>(ErrorCategory::IO, fmt::format("Failed to open {} in package", rel));
++    }
++    FILE* out = rex::filesystem::OpenFile(dest, "wb");
++    if (!out) {
++      in_file->Destroy();
++      return Err<void>(ErrorCategory::IO, fmt::format("Failed to create {}", dest.string()));
++    }
++
++    const size_t size = entry->size();
++    size_t offset = 0;
++    bool ok = true;
++    while (offset < size) {
++      size_t want = std::min(buffer.size(), size - offset);
++      size_t got = 0;
++      if (in_file->ReadSync(std::span<uint8_t>(buffer.data(), want), offset, &got) !=
++              X_STATUS_SUCCESS ||
++          got == 0) {
++        ok = false;
++        break;
++      }
++      if (fwrite(buffer.data(), 1, got, out) != got) {
++        ok = false;
++        break;
++      }
++      offset += got;
++    }
++    fclose(out);
++    in_file->Destroy();
++    if (!ok) {
++      return Err<void>(ErrorCategory::IO, fmt::format("Failed to extract {}", rel));
++    }
++    REXLOG_INFO("  {} ({} bytes)", rel, size);
++    ++files;
++    bytes += size;
++  }
++
++  if (files == 0) {
++    return Err<void>(ErrorCategory::Format, "Package contained no files");
++  }
++  REXLOG_INFO("Extracted {} files ({:.1f} MB) to {}", files, double(bytes) / (1024.0 * 1024.0),
++              out_dir.string());
++  return rex::Ok();
++}
++
++}  // namespace
++
++void RegisterExtract(CLI::App& parent, const CliContext& ctx, DeferredAction& pending) {
++  (void)ctx;
++  auto args = std::make_shared<ExtractArgs>();
++  auto* sub = parent
++                  .add_subcommand("extract",
++                                  "Extract an Xbox 360 STFS package (XBLA LIVE/PIRS/CON file) "
++                                  "to a folder")
++                  ->fallthrough();
++  sub->add_option("package", args->package_path, "Path to the STFS package file")
++      ->type_name("PATH")
++      ->required();
++  sub->add_option("output", args->output_dir, "Folder to extract into")
++      ->type_name("DIR")
++      ->required();
++  sub->callback([args, &pending]() {
++    pending = [args]() -> Result<void> {
++      return ExtractPackage(rex::to_path(args->package_path), rex::to_path(args->output_dir));
++    };
++  });
++}
++
++}  // namespace rexglue::cli
+diff --git a/src/rexglue/commands/extract_command.h b/src/rexglue/commands/extract_command.h
+new file mode 100644
+index 0000000..9f6222b
+--- /dev/null
++++ b/src/rexglue/commands/extract_command.h
+@@ -0,0 +1,18 @@
++/**
++ * @file        rexglue/commands/extract_command.h
++ * @brief       Extract an Xbox 360 STFS package (LIVE/PIRS/CON) to a folder
++ */
++
++#pragma once
++
++#include "../cli_utils.h"
++
++namespace CLI {
++class App;
++}
++
++namespace rexglue::cli {
++
++void RegisterExtract(CLI::App& parent, const CliContext& ctx, DeferredAction& pending);
++
++}  // namespace rexglue::cli
+diff --git a/src/rexglue/main.cpp b/src/rexglue/main.cpp
+index becc71e..8791481 100644
+--- a/src/rexglue/main.cpp
++++ b/src/rexglue/main.cpp
+@@ -8,6 +8,7 @@
+ 
+ #include "cli_utils.h"
+ #include "commands/codegen_command.h"
++#include "commands/extract_command.h"
+ #include "commands/init_command.h"
+ #include "commands/test_recompiler.h"
+ #include "ui/ui.h"
+@@ -81,6 +82,7 @@ int main(int argc, char** argv) {
+   rexglue::cli::RegisterCodegen(app, ctx, pending);
+   rexglue::cli::RegisterInit(app, ctx, pending);
+   rexglue::cli::RegisterRecompileTests(app, ctx, pending);
++  rexglue::cli::RegisterExtract(app, ctx, pending);
+ 
+   rex::cvar::RegisterCliOptions(app);
+ 
+diff --git a/src/system/kernel_state.cpp b/src/system/kernel_state.cpp
+index 697399c..a4fe5a3 100644
+--- a/src/system/kernel_state.cpp
++++ b/src/system/kernel_state.cpp
+@@ -434,6 +434,35 @@ void KernelState::FreeTLS(PPCContext* context, uint32_t slot) {
+   kernel::xboxkrnl::xeKeKfReleaseSpinLock(context, tls_lock, old_irql);
+ }
+ 
++bool KernelState::ToggleGuestPause() {
++  // Debug freeze-frame: host-suspend every guest thread (the CP worker / present
++  // are not guest threads, so the last frame stays on screen). Matched
++  // suspend/resume via the static flag keeps host suspend counts balanced.
++  static std::atomic<bool> s_paused{false};
++  bool pause = !s_paused.load(std::memory_order_relaxed);
++  s_paused.store(pause, std::memory_order_relaxed);
++  const std::vector<object_ref<XThread>> threads = object_table()->GetObjectsByType<XThread>();
++  uint32_t n = 0;
++  for (const object_ref<XThread>& thread : threads) {
++    if (!thread || !thread->is_guest_thread()) {
++      continue;
++    }
++    rex::thread::Thread* host = thread->thread();
++    if (!host) {
++      continue;
++    }
++    uint32_t host_suspend_count = 0;
++    if (pause) {
++      host->Suspend(&host_suspend_count);
++    } else {
++      host->Resume(&host_suspend_count);
++    }
++    ++n;
++  }
++  REXSYS_INFO("Guest emulation {} (F1) -- {} guest threads", pause ? "PAUSED" : "RESUMED", n);
++  return pause;
++}
++
+ void KernelState::RegisterTitleTerminateNotification(uint32_t routine, uint32_t priority) {
+   TerminateNotification notify;
+   notify.guest_routine = routine;
+diff --git a/src/system/runtime.cpp b/src/system/runtime.cpp
+index c10694c..d85444a 100644
+--- a/src/system/runtime.cpp
++++ b/src/system/runtime.cpp
+@@ -236,9 +236,12 @@ X_STATUS Runtime::Setup(const rex::PPCImageInfo& image_info, RuntimeConfig confi
+     REXSYS_DEBUG("Registered {} recompiled functions ({} duplicates, {} rejected)", count,
+                  duplicates, rejected);
+     if (rejected > 0) {
+-      REXSYS_ERROR("PPCImageInfo registration: {} func_mappings entries rejected", rejected);
+-      Shutdown();
+-      return X_STATUS_UNSUCCESSFUL;
++      // Non-fatal: out-of-code-range synthetic stubs (e.g. GoldenEye's
++      // 0x830E0xxx dead branch targets) can't be registered in the guest
++      // function table but must not brick runtime setup -- they are only ever
++      // reached by direct host tail-calls, never via the dispatch table.
++      REXSYS_WARN("PPCImageInfo registration: {} func_mappings entries rejected (non-fatal)",
++                  rejected);
+     }
+   }
+ 
+diff --git a/src/system/xam/user_profile.cpp b/src/system/xam/user_profile.cpp
+index a77f5e6..166b286 100644
+--- a/src/system/xam/user_profile.cpp
++++ b/src/system/xam/user_profile.cpp
+@@ -10,13 +10,18 @@
+  */
+ 
+ #include <sstream>
++#include <string>
+ 
+ #include <fmt/format.h>
+ 
++#include <rex/cvar.h>
+ #include <rex/logging.h>
+ #include <rex/system/kernel_state.h>
+ #include <rex/system/xam/user_profile.h>
+ 
++REXCVAR_DEFINE_STRING(ge_username, "User", "Online",
++                      "Your in-game name / gamertag (max 15 chars). Set this for online play.");
++
+ namespace rex {
+ namespace system {
+ namespace xam {
+@@ -26,7 +31,10 @@ UserProfile::UserProfile() {
+   // if non-zero, it prevents the user from playing the game.
+   // "You do not have permissions to perform this operation."
+   xuid_ = 0xB13EBABEBABEBABE;
+-  name_ = "User";
++  {
++    std::string uname = REXCVAR_GET(ge_username);
++    name_ = uname.empty() ? std::string("User") : uname.substr(0, 15);  // gamertag max 15
++  }
+ 
+   // https://cs.rin.ru/forum/viewtopic.php?f=38&t=60668&hilit=gfwl+live&start=195
+   // https://github.com/arkem/py360/blob/master/py360/constants.py
+diff --git a/src/system/xevent.cpp b/src/system/xevent.cpp
+index c24fbd1..d8d2395 100644
+--- a/src/system/xevent.cpp
++++ b/src/system/xevent.cpp
+@@ -73,25 +73,63 @@ void XEvent::Query(uint32_t* out_type, uint32_t* out_state) {
+   }
+ }
+ 
++// Mirror the signalled state into the guest KEVENT header. Real KeSetEvent /
++// KeResetEvent update Header.SignalState, and some guest code reads it directly
++// (GoldenEye's render thread does, to choose between a timed and an INFINITE
++// wait). Previously Set/Reset only touched the host event, leaving SignalState
++// stale -> the render thread picked an infinite wait and deadlocked = freeze.
++void XEvent::SetGuestSignalState(uint32_t state) {
++  uint32_t gobj = guest_object();
++  if (!gobj) {
++    return;
++  }
++  auto* header = memory()->TranslateVirtual<X_DISPATCH_HEADER*>(gobj);
++  if (header) {
++    header->signal_state = state;
++  }
++}
++
+ int32_t XEvent::Set(uint32_t priority_increment, bool wait) {
++  if (is_render_.load(std::memory_order_relaxed)) {
++    // Hold this wakeup until a Wait actually consumes it (see Reset / WaitCallback).
++    render_pending_.store(true, std::memory_order_relaxed);
++  }
++  SetGuestSignalState(1);
+   event_->Set();
+   return 1;
+ }
+ 
+ int32_t XEvent::Pulse(uint32_t priority_increment, bool wait) {
+   event_->Pulse();
++  SetGuestSignalState(0);
+   return 1;
+ }
+ 
+ int32_t XEvent::Reset() {
++  // A render event must not drop a pending GPU-completion Set. GoldenEye's render
++  // loop calls KeResetEvent on the same event the GPU interrupt signals, right in
++  // the window where the Set can land first; under emulation timing the Reset
++  // then destroys it and the render thread hangs forever -> visual freeze. So if
++  // a Set is pending, keep the event set; only a successful Wait clears it.
++  if (is_render_.load(std::memory_order_relaxed) &&
++      render_pending_.load(std::memory_order_relaxed)) {
++    return 1;
++  }
++  SetGuestSignalState(0);
+   event_->Reset();
+   return 1;
+ }
+ 
+ void XEvent::Clear() {
++  SetGuestSignalState(0);
+   event_->Reset();
+ }
+ 
++void XEvent::WaitCallback() {
++  // The waiter received the signal, so any held render Set has been delivered.
++  render_pending_.store(false, std::memory_order_relaxed);
++}
++
+ bool XEvent::Save(stream::ByteStream* stream) {
+   REXSYS_DEBUG("XEvent {:08X} ({})", handle(), manual_reset_ ? "manual" : "auto");
+   SaveObject(stream);
+diff --git a/src/system/xsocket.cpp b/src/system/xsocket.cpp
+index 0b96626..b0d2fce 100644
+--- a/src/system/xsocket.cpp
++++ b/src/system/xsocket.cpp
+@@ -168,28 +168,30 @@ int XSocket::Recv(uint8_t* buf, uint32_t buf_len, uint32_t flags) {
+ 
+ int XSocket::RecvFrom(uint8_t* buf, uint32_t buf_len, uint32_t flags, N_XSOCKADDR_IN* from,
+                       uint32_t* from_len) {
+-  // Pop from secure packets first
+-  // TODO(DrChat): Enable when I commit XNet
+-  /*
++  // Pop from the queued (relayed) packets first. Used by the GoldenEye online
++  // relay: packets delivered via the matchmaker are queued here with the
++  // sender's virtual address, and returned to the game as if received normally.
+   {
+     std::lock_guard<std::mutex> lock(incoming_packet_mutex_);
+-    if (incoming_packets_.size()) {
+-      packet* pkt = (packet*)incoming_packets_.front();
++    if (!incoming_packets_.empty()) {
++      packet* pkt = reinterpret_cast<packet*>(incoming_packets_.front());
+       int data_len = pkt->data_len;
+       std::memcpy(buf, pkt->data, std::min((uint32_t)pkt->data_len, buf_len));
+ 
+-      from->sin_family = 2;
+-      from->sin_addr = pkt->src_ip;
+-      from->sin_port = pkt->src_port;
++      if (from) {
++        from->sin_family = 2;
++        from->sin_addr = pkt->src_ip;
++        from->sin_port = pkt->src_port;
++      }
++      if (from_len) {
++        *from_len = sizeof(sockaddr_in);
++      }
+ 
+       incoming_packets_.pop();
+-      uint8_t* pkt_ui8 = (uint8_t*)pkt;
+-      delete[] pkt_ui8;
+-
++      delete[] reinterpret_cast<uint8_t*>(pkt);
+       return data_len;
+     }
+   }
+-  */
+ 
+   sockaddr_in nfrom;
+   socklen_t nfromlen = sizeof(sockaddr_in);
+diff --git a/src/ui/presenter.cpp b/src/ui/presenter.cpp
+index 7360ed9..f32b767 100644
+--- a/src/ui/presenter.cpp
++++ b/src/ui/presenter.cpp
+@@ -12,6 +12,7 @@
+ #include <algorithm>
+ #include <atomic>
+ #include <cctype>
++#include <chrono>
+ #include <utility>
+ 
+ #include <rex/assert.h>
+@@ -1600,7 +1601,17 @@ void Presenter::WaitForUITickFromUIThread() {
+           std::min(last_vblank_before_wait + uint64_t(1), dxgi_ui_tick_last_vblank_);
+       return;
+     }
+-    dxgi_ui_tick_signal_condition_.wait(dxgi_ui_tick_lock);
++    // Bound the wait: IDXGIOutput::WaitForVBlank() on the tick thread can block
++    // forever if the output stops producing vblanks (display sleep, monitor
++    // topology change, output lost) -- it then never advances the vblank counter
++    // or signals this condition, which would freeze the window paint while the
++    // guest keeps running. On timeout, fall back to painting so the screen stays
++    // live (~30fps) until vblanks resume.
++    if (dxgi_ui_tick_signal_condition_.wait_for(dxgi_ui_tick_lock,
++                                                std::chrono::milliseconds(32)) ==
++        std::cv_status::timeout) {
++      return;
++    }
+   }
+ #endif  // XE_PLATFORM
+ }
+diff --git a/src/ui/rex_app.cpp b/src/ui/rex_app.cpp
+index 9ff54e8..460fe7e 100644
+--- a/src/ui/rex_app.cpp
++++ b/src/ui/rex_app.cpp
+@@ -167,6 +167,7 @@ bool ReXApp::SetupEnvironment() {
+       rex::BuildLogConfig(log_level_str, rex::ParseCategoryLevelsFromConfig(config_path_));
+   log_config.app_name = std::string(GetName());
+   log_config.log_dir = exe_dir / "logs";
++  log_config.async = true;  // keep game/render threads off the file-sink mutex
+   OnConfigureLogging(log_config);
+   rex::ApplyLogCvarOverrides(log_config);
+   rex::InitLogging(log_config);
+@@ -198,9 +199,22 @@ bool ReXApp::SetupEnvironment() {
+   return true;
+ }
+ 
+-bool ReXApp::ConstructRuntime(const PathConfig& paths) {
++bool ReXApp::ConstructRuntime(const PathConfig& in_paths) {
++  // GoldenEye fork: when no --game_data_root is given (e.g. launched by
++  // double-click), fall back to an "assets" folder next to the executable.
++  PathConfig resolved_paths = in_paths;
++  if (resolved_paths.game_data_root.empty()) {
++    auto fallback = rex::filesystem::GetExecutableFolder() / "assets";
++    if (std::filesystem::is_directory(fallback)) {
++      resolved_paths.game_data_root = fallback;
++      REXLOG_INFO("--game_data_root not given; defaulting to {}", fallback.string());
++    }
++  }
++  const PathConfig& paths = resolved_paths;
+   if (paths.game_data_root.empty()) {
+-    auto msg = std::string("--game_data_root was not provided.");
++    auto msg = std::string(
++        "--game_data_root was not provided and no 'assets' folder was found next "
++        "to the executable.");
+     REXLOG_ERROR("{}", msg);
+     rex::ShowSimpleMessageBox(rex::SimpleMessageBoxType::Error, msg);
+     return false;
+@@ -640,4 +654,10 @@ void ReXApp::SetGuestFrameStats(ui::DebugOverlayDialog::FrameStatsProvider provi
+   }
+ }
+ 
++void ReXApp::PersistConfig() {
++  if (!config_path_.empty()) {
++    rex::cvar::SaveConfig(config_path_);
++  }
++}
++
+ }  // namespace rex
+diff --git a/src/ui/vulkan/vulkan_instance.cpp b/src/ui/vulkan/vulkan_instance.cpp
+index 914b311..e327e98 100644
+--- a/src/ui/vulkan/vulkan_instance.cpp
++++ b/src/ui/vulkan/vulkan_instance.cpp
+@@ -9,6 +9,7 @@
+  * @modified    Tom Clay, 2026 - Adapted for ReXGlue runtime
+  */
+ 
++#include <cstring>
+ #include <sstream>
+ #include <string>
+ #include <unordered_map>
+@@ -563,6 +564,12 @@ VkBool32 VulkanInstance::DebugUtilsMessengerCallback(
+     VkDebugUtilsMessageSeverityFlagBitsEXT message_severity,
+     VkDebugUtilsMessageTypeFlagsEXT message_types,
+     const VkDebugUtilsMessengerCallbackDataEXT* callback_data, [[maybe_unused]] void* user_data) {
++  // MoltenVK reports this for every pipeline/draw that disables primitive
++  // restart (Metal can't): harmless, but it flooded the log with ~200 lines/s.
++  if (callback_data->pMessage &&
++      std::strstr(callback_data->pMessage, "does not support disabling primitive restart")) {
++    return VK_FALSE;
++  }
+   std::ostringstream log_str;
+ 
+   log_str << "Vulkan " << vk::to_string(vk::DebugUtilsMessageSeverityFlagBitsEXT(message_severity))
+diff --git a/src/ui/window.cpp b/src/ui/window.cpp
+index 7795c1e..48d6231 100644
+--- a/src/ui/window.cpp
++++ b/src/ui/window.cpp
+@@ -16,6 +16,7 @@
+ #include <rex/cvar.h>
+ #include <rex/graphics/video_mode_util.h>
+ #include <rex/logging.h>
++#include <rex/system/kernel_state.h>  // F1 debug pause
+ #include <rex/ui/imgui_drawer.h>
+ #include <rex/ui/presenter.h>
+ #include <rex/ui/window.h>
+@@ -691,6 +692,15 @@ void Window::OnFileDrop(FileDropEvent& e, WindowDestructionReceiver& destruction
+ }
+ 
+ void Window::OnKeyDown(KeyEvent& e, WindowDestructionReceiver& destruction_receiver) {
++  // F1 = debug freeze-frame: toggle suspend of all guest threads (initial press
++  // only, ignore key-repeat). Handled before listeners so the game never sees it.
++  if (e.virtual_key() == VirtualKey::kF1 && !e.prev_state()) {
++    if (auto* ks = rex::system::kernel_state()) {
++      ks->ToggleGuestPause();
++    }
++    e.set_handled(true);
++    return;
++  }
+   PropagateEventThroughInputListeners(
+       [&e](auto listener) {
+         listener->OnKeyDown(e);

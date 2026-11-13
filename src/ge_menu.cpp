@@ -108,6 +108,7 @@ constexpr KeyBind kBinds[] = {
     {"Start", "ge_key_start"},          {"Back", "ge_key_back"},
     {"Look Up", "ge_key_look_up"},      {"Look Down", "ge_key_look_down"},
     {"Look Left", "ge_key_look_left"},  {"Look Right", "ge_key_look_right"},
+    {"Sprint", "ge_key_sprint"},
 };
 
 // Map an ImGui key to a Windows virtual-key code (== rex VirtualKey value).
@@ -474,6 +475,7 @@ void GeMenuDialog::DrawContent(ImGuiIO& /*io*/) {
 
       ImGui::Spacing();
 
+#if defined(_WIN32)
       // --- Graphics API. "Auto" detects the GPU at boot: AMD -> Vulkan (the
       //     D3D12 path times out / black-screens on AMD for this title), all
       //     others -> Direct3D 12. Override here if needed; applied on restart. ---
@@ -497,6 +499,11 @@ void GeMenuDialog::DrawContent(ImGuiIO& /*io*/) {
         ImGui::EndCombo();
       }
       ImGui::TextColored(ImColor(kInkDim), "(AMD uses Vulkan automatically; applies after restart)");
+#else
+      // macOS / Linux have a single backend (Vulkan; on macOS it runs on Metal
+      // through MoltenVK), so there is no API to choose.
+      ImGui::TextColored(ImColor(kInkDim), "Graphics API: Vulkan (Metal via MoltenVK on macOS)");
+#endif
 
       ImGui::Spacing();
 
@@ -655,6 +662,25 @@ void GeMenuDialog::DrawContent(ImGuiIO& /*io*/) {
       }
       ImGui::TextColored(ImColor(kInkDim),
                          "(controller still works; cursor is captured in-game, freed in this menu)");
+
+      ImGui::Spacing();
+      ImGui::Separator();
+      ImGui::Spacing();
+      ImGui::TextColored(ImColor(kTitle), "SPRINT");
+      ImGui::Spacing();
+      // Sprint mode -- live (the input poll reads ge_sprint_toggle every poll).
+      {
+        static const char* const kSprintModes[] = {"Toggle", "Hold"};
+        int sprint_mode = GetCvarB("ge_sprint_toggle") ? 0 : 1;
+        if (ImGui::Combo("Sprint Mode", &sprint_mode, kSprintModes, 2)) {
+          SetCvarB("ge_sprint_toggle", sprint_mode == 0);
+          if (callbacks_.persist_config) callbacks_.persist_config();
+        }
+        ImGui::TextColored(ImColor(kInkDim),
+                           sprint_mode == 0
+                               ? "(L3 / sprint key turns sprint on or off; stopping turns it off)"
+                               : "(sprint while L3 / sprint key is held)");
+      }
 
       ImGui::Spacing();
       ImGui::Separator();

@@ -1,6 +1,9 @@
 # --- Build output ---
 /out/
 /build/
+/GoldenEye.app/
+/GoldenEye-Windows/
+/macos/.deps/
 /cmake-build-*/
 *.pdb
 *.exe

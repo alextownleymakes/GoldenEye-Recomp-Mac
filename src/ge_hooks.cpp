@@ -24,7 +24,11 @@
 #include <rex/graphics/command_processor.h>
 #include <rex/system/xthread.h>
 #include <rex/system/kernel_state.h>
+#include <array>
+#include <cstdlib>
 #include <cstdio>
+#include <string>
+#if defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -33,7 +37,21 @@
 #endif
 #include <windows.h>
 #include <shellapi.h>  // ShellExecuteW (WIN32_LEAN_AND_MEAN excludes it)
-#include <string>
+#else
+// macOS / Linux: input comes from the SDK's (SDL3) window events instead of
+// Win32 raw input / GetAsyncKeyState, and relaunch uses posix_spawn.
+#include <array>
+#include <cmath>
+#include <spawn.h>
+#include <unistd.h>
+#include <rex/filesystem.h>
+#include <rex/memory/utils.h>
+#include <rex/ui/ui_event.h>
+#include <rex/ui/window.h>
+#include <rex/ui/window_listener.h>
+#include <rex/ui/windowed_app_context.h>
+extern char** environ;
+#endif
 
 namespace ge {
 // Relaunch this same executable as a fresh, detached process. Used by the ONLINE
@@ -41,6 +59,7 @@ namespace ge {
 // ge.toml (new username / server / online-enable) at boot, then the caller tears
 // the current process down. Launching a second instance of a running exe is fine
 // on Windows -- the image file is opened share-read.
+#if defined(_WIN32)
 void LaunchSelfDetached() {
   wchar_t exe_path[MAX_PATH];
   DWORD n = GetModuleFileNameW(nullptr, exe_path, MAX_PATH);
@@ -54,6 +73,25 @@ void LaunchSelfDetached() {
   ShellExecuteW(nullptr, L"open", exe_path, nullptr,
                 workdir.empty() ? nullptr : workdir.c_str(), SW_SHOWNORMAL);
 }
+#else
+void LaunchSelfDetached() {
+  // Spawn a fresh copy of this executable; the caller then quits this one.
+  const std::string exe = rex::filesystem::GetExecutablePath().string();
+  if (exe.empty()) {
+    return;
+  }
+  char* argv[] = {const_cast<char*>(exe.c_str()), nullptr};
+  posix_spawnattr_t attr;
+  posix_spawnattr_init(&attr);
+#if defined(POSIX_SPAWN_SETSID)
+  // Own session, so the new instance isn't tied to this one's lifetime.
+  posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETSID);
+#endif
+  pid_t pid = 0;
+  posix_spawn(&pid, exe.c_str(), nullptr, &attr, argv, environ);
+  posix_spawnattr_destroy(&attr);
+}
+#endif
 }  // namespace ge
 
 // Probe to read CommandProcessor's protected ring read pointer (legal: a
@@ -127,6 +165,28 @@ inline void ST16(uint8_t* b, uint32_t ga, uint16_t val) {
 // off the log instead of capturing a live process. Zero gameplay effect.
 // ===========================================================================
 namespace {
+// Bytes readable starting at host address p (0 = not readable/committed). Used
+// by the diagnostic stack walks so they never fault on an unmapped guest stack.
+size_t ge_readable_bytes(const void* p) {
+#if defined(_WIN32)
+  MEMORY_BASIC_INFORMATION mbi;
+  if (VirtualQuery(p, &mbi, sizeof(mbi)) != sizeof(mbi) || mbi.State != MEM_COMMIT ||
+      (mbi.Protect & (PAGE_READONLY | PAGE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE_READ |
+                      PAGE_EXECUTE_READWRITE)) == 0) {
+    return 0;
+  }
+  return static_cast<size_t>(static_cast<const uint8_t*>(mbi.BaseAddress) + mbi.RegionSize -
+                             static_cast<const uint8_t*>(p));
+#else
+  size_t length = 0;
+  rex::memory::PageAccess access = rex::memory::PageAccess::kNoAccess;
+  if (!rex::memory::QueryProtect(const_cast<void*>(p), length, access)) return 0;
+  if ((static_cast<int>(access) & static_cast<int>(rex::memory::PageAccess::kReadOnly)) == 0)
+    return 0;
+  return length;
+#endif
+}
+
 std::atomic<uint32_t> g_ge_device{0};   // device struct (dev) seen by ge_dbg_now
 std::atomic<uint32_t> g_ge_idblk{0};    // id-block (idblk) seen by ge_dbg_now
 std::atomic<uint32_t> g_dbgnow_calls{0};  // increments each ge_dbg_now (guest polling sub_82198C28)
@@ -258,12 +318,8 @@ void ge_watchdog_thread() {
               uint32_t sp = c->r1.u32;
               if (sp >= 0x10000u && sp < 0xC0000000u) {
                 uint8_t* hsp = base + sp;
-                MEMORY_BASIC_INFORMATION mbi;
-                if (VirtualQuery(hsp, &mbi, sizeof(mbi)) == sizeof(mbi) &&
-                    mbi.State == MEM_COMMIT &&
-                    (mbi.Protect & (PAGE_READONLY | PAGE_READWRITE | PAGE_WRITECOPY |
-                                    PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE)) != 0) {
-                  uint8_t* rend = static_cast<uint8_t*>(mbi.BaseAddress) + mbi.RegionSize;
+                if (size_t readable = ge_readable_bytes(hsp)) {
+                  uint8_t* rend = hsp + readable;
                   uint8_t* send = hsp + 0x2400u;
                   if (send > rend) send = rend;  // never read past the committed page
                   char sbuf[500];
@@ -351,10 +407,8 @@ void ge_watchdog_thread() {
                   int fo = std::snprintf(fb, sizeof(fb), "lr=%x | ", pc);
                   if (sp >= 0x10000u && sp < 0xC0000000u) {
                     uint8_t* hsp = base + sp;
-                    MEMORY_BASIC_INFORMATION mbi;
-                    if (VirtualQuery(hsp, &mbi, sizeof(mbi)) == sizeof(mbi) &&
-                        mbi.State == MEM_COMMIT) {
-                      uint8_t* rend = static_cast<uint8_t*>(mbi.BaseAddress) + mbi.RegionSize;
+                    if (size_t readable = ge_readable_bytes(hsp)) {
+                      uint8_t* rend = hsp + readable;
                       uint8_t* send = hsp + 0x2800u;
                       if (send > rend) send = rend;
                       for (uint8_t* pp = hsp; pp + 4 <= send && fo < 580; pp += 4) {
@@ -711,13 +765,16 @@ std::atomic<bool> g_mouselook_suppressed{false};  // set true while the pause me
 // act on the game/menu -- the menu only listens for the capture.
 std::atomic<bool> g_rebind_capturing{false};
 
+bool ge_mouselook_on() { return REXCVAR_GET(ge_mouselook_enable); }
+bool ge_mouse_active();  // defined after the platform blocks below
+
+#if defined(_WIN32)
 // Cursor-capture state (touched from the mouse thread + SetMouselookSuppressed).
 HWND g_game_hwnd = nullptr;
 HCURSOR g_arrow_cursor = nullptr;
 HCURSOR g_blank_cursor = nullptr;
 bool g_captured = false;
 
-bool ge_mouselook_on() { return REXCVAR_GET(ge_mouselook_enable); }
 
 bool ge_game_has_focus() {
   HWND fg = GetForegroundWindow();
@@ -739,12 +796,6 @@ HWND ge_game_window() {
   return g_game_hwnd;
 }
 
-// Active = mouse-look on, no menu up, and we own focus. Drives both delta
-// collection and cursor capture.
-bool ge_mouse_active() {
-  return ge_mouselook_on() && !g_mouselook_suppressed.load(std::memory_order_relaxed) &&
-         ge_game_has_focus();
-}
 
 HCURSOR ge_make_blank_cursor() {
   // 32x32 fully transparent cursor (AND=1 / XOR=0 == transparent everywhere).
@@ -850,6 +901,144 @@ void ge_start_mouse_once() {
     std::thread(ge_mouse_thread).detach();
   }
 }
+#else
+// ---------------------------------------------------------------------------
+// macOS / Linux input. The SDK's SDL3 window delivers key, mouse-button and
+// relative mouse-motion events; a high-z-order input listener records them
+// (never marking them handled, so ImGui and the SDK still see everything).
+// Cursor capture = SDL relative mouse mode (hidden, locked pointer), toggled on
+// the UI thread exactly like the Win32 path's clip/hide.
+// ---------------------------------------------------------------------------
+rex::ui::Window* g_window = nullptr;               // set by ge::AttachWindow (UI thread)
+std::array<std::atomic<bool>, 256> g_vk_down{};    // virtual-key state (== Win32 VK codes)
+std::atomic<bool> g_captured{false};               // relative mode currently on
+std::atomic<bool> g_capture_update_queued{false};  // a UI-thread capture update is pending
+bool g_relative_mode = false;                      // UI thread only
+rex::ui::Window::CursorVisibility g_precapture_cursor =
+    rex::ui::Window::CursorVisibility::kVisible;    // UI thread only
+float g_acc_dx = 0.0f, g_acc_dy = 0.0f;             // UI thread only (sub-pixel remainder)
+int32_t g_prev_x = 0, g_prev_y = 0;                 // UI thread only (fallback deltas)
+
+bool ge_game_has_focus() { return g_window && g_window->HasFocus(); }
+
+void ge_set_vk(uint32_t vk, bool down) {
+  if (vk < g_vk_down.size()) g_vk_down[vk].store(down, std::memory_order_relaxed);
+}
+
+void ge_clear_keys() {
+  for (auto& k : g_vk_down) k.store(false, std::memory_order_relaxed);
+}
+
+uint32_t ge_mouse_button_vk(rex::ui::MouseEvent::Button b) {
+  switch (b) {
+    case rex::ui::MouseEvent::Button::kLeft: return 0x01;    // VK_LBUTTON
+    case rex::ui::MouseEvent::Button::kRight: return 0x02;   // VK_RBUTTON
+    case rex::ui::MouseEvent::Button::kMiddle: return 0x04;  // VK_MBUTTON
+    case rex::ui::MouseEvent::Button::kX1: return 0x05;      // VK_XBUTTON1
+    case rex::ui::MouseEvent::Button::kX2: return 0x06;      // VK_XBUTTON2
+    default: return 0;
+  }
+}
+
+class GeInputListener final : public rex::ui::WindowInputListener {
+ public:
+  void OnKeyDown(rex::ui::KeyEvent& e) override {
+    ge_set_vk(static_cast<uint32_t>(e.virtual_key()), true);
+  }
+  void OnKeyUp(rex::ui::KeyEvent& e) override {
+    ge_set_vk(static_cast<uint32_t>(e.virtual_key()), false);
+  }
+  void OnMouseDown(rex::ui::MouseEvent& e) override {
+    if (uint32_t vk = ge_mouse_button_vk(e.button())) ge_set_vk(vk, true);
+  }
+  void OnMouseUp(rex::ui::MouseEvent& e) override {
+    if (uint32_t vk = ge_mouse_button_vk(e.button())) ge_set_vk(vk, false);
+  }
+  void OnMouseMove(rex::ui::MouseEvent& e) override {
+    float dx, dy;
+    if (g_relative_mode) {
+      dx = e.dx();
+      dy = e.dy();
+    } else {
+      dx = float(e.x() - g_prev_x);
+      dy = float(e.y() - g_prev_y);
+    }
+    g_prev_x = e.x();
+    g_prev_y = e.y();
+    // Only collect while captured, so motion in menus / while unfocused never
+    // queues up and snaps the view on return (same rule as the Win32 path).
+    if (!g_captured.load(std::memory_order_relaxed) || !ge_mouse_active()) {
+      g_acc_dx = g_acc_dy = 0.0f;
+      return;
+    }
+    g_acc_dx += dx;
+    g_acc_dy += dy;
+    const int ix = static_cast<int>(std::trunc(g_acc_dx));
+    const int iy = static_cast<int>(std::trunc(g_acc_dy));
+    g_acc_dx -= float(ix);
+    g_acc_dy -= float(iy);
+    if (ix) g_mouse_dx.fetch_add(ix, std::memory_order_relaxed);
+    if (iy) g_mouse_dy.fetch_add(iy, std::memory_order_relaxed);
+  }
+};
+GeInputListener g_input_listener;
+
+// UI thread: apply the desired capture state to the window.
+void ge_apply_capture_ui() {
+  g_capture_update_queued.store(false, std::memory_order_relaxed);
+  rex::ui::Window* w = g_window;
+  if (!w) return;
+  const bool want = ge_mouse_active();
+  const bool have = g_captured.load(std::memory_order_relaxed);
+  if (!w->HasFocus()) ge_clear_keys();  // key-ups are lost while unfocused
+  if (want == have) return;
+  if (want) {
+    g_precapture_cursor = w->GetCursorVisibility();
+    w->SetCursorVisibility(rex::ui::Window::CursorVisibility::kHidden);
+    w->CaptureMouse();
+    g_relative_mode = w->SetRelativeMouseMode(true);
+    g_acc_dx = g_acc_dy = 0.0f;
+    g_mouse_dx.store(0, std::memory_order_relaxed);
+    g_mouse_dy.store(0, std::memory_order_relaxed);
+    g_captured.store(true, std::memory_order_relaxed);
+    REXKRNL_INFO("GEMOUSE capture ON (relative={})", g_relative_mode);
+  } else {
+    g_captured.store(false, std::memory_order_relaxed);
+    if (g_relative_mode) w->SetRelativeMouseMode(false);
+    g_relative_mode = false;
+    w->ReleaseMouse();
+    w->SetCursorVisibility(g_precapture_cursor);
+    REXKRNL_INFO("GEMOUSE capture OFF");
+  }
+}
+
+// Any thread: request a capture update if the desired state changed.
+void ge_update_mouse_capture() {
+  rex::ui::Window* w = g_window;
+  if (!w) return;
+  const bool want = ge_mouse_active();
+  const bool focus_lost = !w->HasFocus();
+  if (want == g_captured.load(std::memory_order_relaxed) && !focus_lost) return;
+  if (!g_capture_update_queued.exchange(true, std::memory_order_relaxed)) {
+    if (!w->app_context().CallInUIThreadDeferred(ge_apply_capture_ui)) {
+      g_capture_update_queued.store(false, std::memory_order_relaxed);
+    }
+  }
+}
+
+void ge_start_mouse_once() {
+  // Nothing to start: events arrive through g_input_listener. Re-evaluate the
+  // capture state every controller poll (the Win32 path uses a 15ms timer).
+  ge_update_mouse_capture();
+}
+#endif  // _WIN32
+
+// Active = mouse-look on, no menu up, and we own focus. Drives both delta
+// collection and cursor capture.
+bool ge_mouse_active() {
+  return ge_mouselook_on() && !g_mouselook_suppressed.load(std::memory_order_relaxed) &&
+         ge_game_has_focus();
+}
 
 int ge_take_mouse_dx() { return g_mouse_dx.exchange(0, std::memory_order_relaxed); }
 int ge_take_mouse_dy() { return g_mouse_dy.exchange(0, std::memory_order_relaxed); }
@@ -880,6 +1069,33 @@ void SetMouselookSuppressed(bool v) {
 // controller input is swallowed (ge_inject_keyboard) so the bound key can't act.
 void SetRebindCapturing(bool v) {
   g_rebind_capturing.store(v, std::memory_order_relaxed);
+}
+
+// Hook keyboard/mouse input on the game window (macOS/Linux). On Windows input
+// is read via Win32 raw input / GetAsyncKeyState instead, so these are no-ops.
+void AttachInputWindow(rex::ui::Window* window) {
+#if !defined(_WIN32)
+  if (!window || g_window == window) return;
+  if (g_window) g_window->RemoveInputListener(&g_input_listener);
+  g_window = window;
+  // Highest priority so we see every event first; we never mark them handled.
+  g_window->AddInputListener(&g_input_listener, 1000);
+#else
+  (void)window;
+#endif
+}
+
+void DetachInputWindow() {
+#if !defined(_WIN32)
+  if (!g_window) return;
+  if (g_captured.load(std::memory_order_relaxed)) {
+    g_mouselook_suppressed.store(true, std::memory_order_relaxed);
+    ge_apply_capture_ui();  // called on the UI thread (OnShutdown)
+  }
+  g_window->RemoveInputListener(&g_input_listener);
+  g_window = nullptr;
+  ge_clear_keys();
+#endif
 }
 }  // namespace ge
 
@@ -1114,6 +1330,30 @@ constexpr uint16_t BTN_DPAD_UP = 0x0001, BTN_DPAD_DOWN = 0x0002, BTN_DPAD_LEFT =
                    BTN_RSHOULDER = 0x0200, BTN_A = 0x1000, BTN_B = 0x2000, BTN_X = 0x4000,
                    BTN_Y = 0x8000;
 
+// Gamepad slots are 16 bytes apart: slot i = GE_PAD0 + 16*i (the poll loop in
+// ge_input_poll_controllers walks 4 of them).
+constexpr uint32_t GE_PAD_STRIDE = 16u;
+
+// Per-slot "sprint active", set every input poll and read by the movement hook.
+std::array<std::atomic<bool>, 4> g_sprint_held{};
+// Toggle mode state (input poll only): latched sprint and last button state.
+std::array<bool, 4> g_sprint_toggled{};
+std::array<bool, 4> g_sprint_btn_prev{};
+
+// Is this virtual key (Win32 VK code space) currently held?
+bool ge_vk_is_down(uint32_t vk) {
+#if defined(_WIN32)
+  return (GetAsyncKeyState(static_cast<int>(vk)) & 0x8000) != 0;
+#else
+  if (vk < g_vk_down.size() && g_vk_down[vk].load(std::memory_order_relaxed)) return true;
+  // Generic modifiers: SDL reports left/right-specific codes on some layouts.
+  if (vk == 0x10) return ge_vk_is_down(0xA0) || ge_vk_is_down(0xA1);  // Shift
+  if (vk == 0x11) return ge_vk_is_down(0xA2) || ge_vk_is_down(0xA3);  // Control
+  if (vk == 0x12) return ge_vk_is_down(0xA4) || ge_vk_is_down(0xA5);  // Alt/Option
+  return false;
+#endif
+}
+
 bool ge_input_active() {  // keyboard counts only when focused + not in the menu
   return !g_mouselook_suppressed.load(std::memory_order_relaxed) && ge_game_has_focus();
 }
@@ -1133,8 +1373,7 @@ bool ge_key_down(const char* name) {
     while (!one.empty() && (one.back() == ' ' || one.back() == '\t')) one.pop_back();
     if (!one.empty()) {
       rex::ui::VirtualKey vk = rex::ui::ParseVirtualKey(one);
-      if (vk != rex::ui::VirtualKey::kNone &&
-          (GetAsyncKeyState(static_cast<int>(vk)) & 0x8000) != 0)
+      if (vk != rex::ui::VirtualKey::kNone && ge_vk_is_down(static_cast<uint32_t>(vk)))
         return true;
     }
     if (comma == std::string::npos) break;
@@ -1147,6 +1386,17 @@ bool ge_key_down(const char* name) {
 // Keyboard binds. Defaults are a placeholder layout; the user's preferred layout
 // is hard-set at boot (ge_app OnConfigurePaths) and rebindable in the menu.
 REXCVAR_DEFINE_BOOL(ge_keyboard_enable, true, "Input", "Map keyboard keys to controller buttons");
+// Sprint: a mod, not in the original game. Holding L3 (left stick press) runs
+// faster, with no stamina limit; L3 then no longer crouches (R3 still does).
+REXCVAR_DEFINE_BOOL(ge_sprint_enable, true, "Input",
+                    "L3 sprints (unlimited) instead of crouching; R3 still crouches");
+REXCVAR_DEFINE_BOOL(ge_sprint_toggle, true, "Input",
+                    "Sprint mode: true = press to toggle (turns off when you stop moving), "
+                    "false = hold");
+REXCVAR_DEFINE_DOUBLE(ge_sprint_speed, 1.75, "Input",
+                      "Sprint speed multiplier (normal run 1.0, the game's own full-speed run "
+                      "after 3s is 1.25)")
+    .range(1.0, 3.0);
 REXCVAR_DEFINE_STRING(ge_key_mv_up, "W", "Input/Keybinds", "Move forward (left stick up)");
 REXCVAR_DEFINE_STRING(ge_key_mv_down, "S", "Input/Keybinds", "Move back (left stick down)");
 REXCVAR_DEFINE_STRING(ge_key_mv_left, "A", "Input/Keybinds", "Move left (left stick left)");
@@ -1160,6 +1410,7 @@ REXCVAR_DEFINE_STRING(ge_key_rt, "LMB", "Input/Keybinds", "Right trigger");
 REXCVAR_DEFINE_STRING(ge_key_lb, "Q", "Input/Keybinds", "Left shoulder");
 REXCVAR_DEFINE_STRING(ge_key_rb, "F", "Input/Keybinds", "Right shoulder");
 REXCVAR_DEFINE_STRING(ge_key_l3, "C", "Input/Keybinds", "Left stick press");
+REXCVAR_DEFINE_STRING(ge_key_sprint, "Shift", "Input/Keybinds", "Sprint");
 REXCVAR_DEFINE_STRING(ge_key_r3, "V", "Input/Keybinds", "Right stick press");
 REXCVAR_DEFINE_STRING(ge_key_dup, "Up", "Input/Keybinds", "D-pad up");
 REXCVAR_DEFINE_STRING(ge_key_ddown, "Down", "Input/Keybinds", "D-pad down");
@@ -1192,6 +1443,45 @@ void ge_inject_keyboard(PPCRegister& /*r11*/) {
     ce_patched = true;
     ge_apply_ce_data_patches(base);
     REXKRNL_INFO("GECE community data bug-fixes applied");
+  }
+
+  // Sprint (L3): read it per pad slot and strip the L3 bit so the game no
+  // longer crouches on it. Keyboard sprint (ge_key_sprint) drives slot 0.
+  // Hold mode: sprint while pressed. Toggle mode: each press flips sprint, and
+  // it turns off as soon as the player stops moving (left stick centred and,
+  // for slot 0, no movement keys held).
+  {
+    const bool sprint_on = REXCVAR_GET(ge_sprint_enable);
+    const bool toggle_mode = REXCVAR_GET(ge_sprint_toggle);
+    const bool kb_active = REXCVAR_GET(ge_keyboard_enable) && ge_input_active();
+    constexpr int kStickDeadzone = 7849;  // XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE
+    for (uint32_t i = 0; i < 4; ++i) {
+      const uint32_t pad = GE_PAD0 + GE_PAD_STRIDE * i;
+      const uint16_t buttons = LD16(base, pad);
+      bool pressed = sprint_on && (buttons & BTN_LTHUMB) != 0;
+      if (pressed) ST16(base, pad, static_cast<uint16_t>(buttons & ~BTN_LTHUMB));
+      const int lx = static_cast<int16_t>(LD16(base, pad + 4));
+      const int ly = static_cast<int16_t>(LD16(base, pad + 6));
+      bool moving = std::abs(lx) > kStickDeadzone || std::abs(ly) > kStickDeadzone;
+      if (i == 0 && sprint_on && kb_active) {
+        if (ge_key_down("ge_key_sprint")) pressed = true;
+        if (ge_key_down("ge_key_mv_up") || ge_key_down("ge_key_mv_down") ||
+            ge_key_down("ge_key_mv_left") || ge_key_down("ge_key_mv_right")) {
+          moving = true;
+        }
+      }
+      bool active;
+      if (!sprint_on || !toggle_mode) {
+        g_sprint_toggled[i] = false;
+        active = pressed;
+      } else {
+        if (pressed && !g_sprint_btn_prev[i]) g_sprint_toggled[i] = !g_sprint_toggled[i];
+        if (!moving) g_sprint_toggled[i] = false;
+        active = g_sprint_toggled[i];
+      }
+      g_sprint_btn_prev[i] = pressed;
+      g_sprint_held[i].store(active, std::memory_order_relaxed);
+    }
   }
 
   // Rebind capture: the menu is listening for a key to bind. Swallow ALL slot-0
@@ -1253,6 +1543,56 @@ void ge_inject_keyboard(PPCRegister& /*r11*/) {
   if (ge_key_down("ge_key_look_down")) ry = -32767;
   if (rx) ST16(base, GE_PAD0 + 8, static_cast<uint16_t>(rx));
   if (ry) ST16(base, GE_PAD0 + 10, static_cast<uint16_t>(ry));
+}
+
+// ---------------------------------------------------------------------------
+// Sprint. In the per-frame Bond movement update (sub_820B99E8, the XBLA build of
+// the N64 bondviewMove) the game does
+//     speedforwards *= 1.08f;            // 0x820BAF80
+//     speedforwards *= speedboost;       // 0x820BAF8C  <- hooked here
+// where speedboost (player+0x284) is 1.0, ramping to 1.25 after ~3s of running
+// ("full speed"). While sprint is held and Bond moves forward, the multiplier in
+// f13 is raised to ge_sprint_speed for this frame only. Nothing is stored, so the
+// game's own speedboost/full-speed logic is untouched, and because only the
+// requested speed changes, movement still goes through the game's normal
+// collision. Unlimited: there is no stamina.
+//   f0  = speedforwards * 1.08 (sign = forward/back)
+//   f13 = speedboost (just loaded from player+0x284)
+// g_CurrentPlayer is at 0x82F1FAAC (lwz r10,-1364(r30), r30 = 0x82F20000).
+// ---------------------------------------------------------------------------
+void ge_sprint_boost(PPCRegister& f0, PPCRegister& f13) {
+  if (!REXCVAR_GET(ge_sprint_enable) || f0.f64 <= 0.0) return;  // forward only
+  PPCContext* ctx; uint8_t* base; getcb(ctx, base); (void)ctx;
+
+  const uint32_t cur = LD32(base, GE_BONDVIEW_CUR);
+  if (!cur) return;
+
+  // Which pad drives the player being moved?
+  int slot = -1;
+  if (rex::cvar::GetFlagByName("ge_online_enable") == "true") {
+    // Online (System Link): one local Bond per console, always on pad 0. It is
+    // the player whose viewport offset (+0x904) is 0; remote Bonds never sprint
+    // from this console's pad.
+    for (uint32_t i = 0; i < 4; ++i) {
+      const uint32_t p = LD32(base, 0x82F1FA98u + i * 4u);
+      if (p && LD32(base, p + 0x904u) == 0u) {
+        if (p == cur) slot = 0;
+        break;
+      }
+    }
+  } else {
+    // Single player / split-screen: players[i] is driven by pad i.
+    for (uint32_t i = 0; i < 4; ++i) {
+      if (LD32(base, 0x82F1FA98u + i * 4u) == cur) {
+        slot = static_cast<int>(i);
+        break;
+      }
+    }
+  }
+  if (slot < 0 || !g_sprint_held[slot].load(std::memory_order_relaxed)) return;
+
+  const double sprint = REXCVAR_GET(ge_sprint_speed);
+  if (f13.f64 < sprint) f13.f64 = sprint;
 }
 
 // ===========================================================================
