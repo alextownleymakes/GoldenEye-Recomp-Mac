@@ -73,7 +73,7 @@ Once the app is built you can delete the project folder (or just `out/` and `mac
 | Pause | Start | Return |
 | Recomp settings menu | — | Esc |
 
-Pair a PS5 or Xbox controller under **System Settings → Bluetooth**; it's detected automatically. Keyboard keys can be rebound in the pause menu.
+Pair a PS5 or Xbox controller under **System Settings → Bluetooth**; it's detected automatically. While a controller is connected the mouse is ignored completely (no mouse-look, no cursor capture, mouse buttons do nothing), so it can't interfere with the controller or auto-aim. Keyboard keys can be rebound in the Esc menu.
 
 ### Settings and logs
 
@@ -103,6 +103,7 @@ To play online, someone needs to run a server.
 * **"No game files found"**: put the package file (or `default.xex`) inside `assets/`. It can be in subfolders.
 * **"Need Apple clang 16 or newer"**: update the Command Line Tools from **System Settings → Software Update**, or reinstall them with `xcode-select --install`.
 * **The level is black but sound plays**: make sure `ge.toml` doesn't set `async_shader_compilation` or `vulkan_async_skip_incomplete_frames` to `true`. The Mac build turns both off by default.
+* **Free disk space drops by a few GB after building**: that's macOS swap from the compile, not files the build keeps. Restarting the Mac frees it. The script already compiles fewer files at once on Macs with 16 GB of memory or less; `JOBS=2 ./macos/build-macos.sh` lowers it further.
 * **Anything else**: check the newest log in `~/Library/Logs/GoldenEye/` and include it when you report the issue.
 
 ## Known differences from Windows

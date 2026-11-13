@@ -181,6 +181,28 @@ index 696ff48..5a1cbc6 100644
    VkPipelineLayout resolve_downscale_pipeline_layout_ = VK_NULL_HANDLE;
    VkPipeline resolve_downscale_pipeline_ = VK_NULL_HANDLE;
    VkBuffer resolve_downscale_buffer_ = VK_NULL_HANDLE;
+diff --git a/include/rex/input/input_system.h b/include/rex/input/input_system.h
+index 0c27eed..8ae8143 100644
+--- a/include/rex/input/input_system.h
++++ b/include/rex/input/input_system.h
+@@ -65,6 +65,9 @@ class InputSystem : public system::IInputSystem {
+   std::bitset<kMaxGuestUsers> GetConnectedUsers() const { return connected_users_; }
+   /// Guest user whose device most recently produced a button press.
+   uint32_t GetLastUsedUser() const { return last_used_user_; }
++  /// GoldenEye fork: true while a real controller (not keyboard/mouse
++  /// emulation) is connected. Updated whenever the guest polls input.
++  bool HasPhysicalGamepad() const { return has_physical_gamepad_.load(std::memory_order_relaxed); }
+ 
+  private:
+   using JoystickValue = std::pair<uint16_t, uint16_t>;
+@@ -99,6 +102,7 @@ class InputSystem : public system::IInputSystem {
+   std::array<std::pair<JoystickValue, JoystickValue>, kMaxGuestUsers> user_max_joystick_value_ = {};
+ 
+   std::atomic<int> ui_input_blockers_{0};
++  std::atomic<bool> has_physical_gamepad_{false};
+   // Masked out per user until the guest sees them released.
+   std::array<uint16_t, kMaxGuestUsers> consumed_buttons_ = {};
+ };
 diff --git a/include/rex/logging/types.h b/include/rex/logging/types.h
 index 5cdf089..bd5bc80 100644
 --- a/include/rex/logging/types.h
@@ -2011,6 +2033,22 @@ index 001f36b..7e33af0 100644
              deferred_command_buffer_.CmdVkDispatch(group_count_x, group_count_y, 1);
            }
  
+diff --git a/src/input/input_system.cpp b/src/input/input_system.cpp
+index 40740ee..8280cbe 100644
+--- a/src/input/input_system.cpp
++++ b/src/input/input_system.cpp
+@@ -168,6 +168,11 @@ void InputSystem::RefreshDevices() {
+   std::stable_sort(order.begin(), order.end(),
+                    [&](size_t a, size_t b) { return seen[a].ordinal < seen[b].ordinal; });
+ 
++  // GoldenEye fork: lets the game know a real controller is plugged in.
++  has_physical_gamepad_.store(
++      std::any_of(seen.begin(), seen.end(), [](const DeviceInfo& d) { return !d.synthetic; }),
++      std::memory_order_relaxed);
++
+   devices_.clear();
+   device_owners_.clear();
+   for (size_t i : order) {
 diff --git a/src/kernel/CMakeLists.txt b/src/kernel/CMakeLists.txt
 index 984b97d..8c9afc2 100644
 --- a/src/kernel/CMakeLists.txt

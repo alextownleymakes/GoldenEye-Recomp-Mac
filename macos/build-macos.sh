@@ -22,6 +22,7 @@
 #   ARCH=x86_64 bash macos/build-macos.sh             # force Intel build (default: this Mac's arch)
 #   REXSDK_DIR=/path/to/sdk bash macos/build-macos.sh # use/keep the SDK checkout somewhere else
 #   CLEAN=1 bash macos/build-macos.sh                 # wipe previous game build first
+#   JOBS=2 bash macos/build-macos.sh                  # fewer parallel compiles (less memory/swap)
 #
 set -euo pipefail
 
@@ -59,7 +60,14 @@ SDK_BUILD="$SDK_DIR/out/build/$SDK_PRESET"
 SDK_INSTALL="$SDK_DIR/out/install/$SDK_PRESET"
 GAME_PRESET="mac-$PARCH-$CFG"
 GAME_BUILD="$ROOT/out/build/$GAME_PRESET"
-JOBS="$(sysctl -n hw.ncpu)"
+# Parallel compile jobs. The recompiled game is ~60 very large C++ files that
+# each need a lot of memory; on Macs with 16 GB or less, running one per core
+# pushes macOS into gigabytes of swap. Use half the cores there.
+if [[ -z "${JOBS:-}" ]]; then
+  ncpu="$(sysctl -n hw.ncpu)"
+  mem_gb=$(( $(sysctl -n hw.memsize) / 1073741824 ))
+  if (( mem_gb <= 16 )); then JOBS=$(( ncpu / 2 > 2 ? ncpu / 2 : 2 )); else JOBS="$ncpu"; fi
+fi
 
 # --- 1. Toolchain ------------------------------------------------------------
 bold "Checking build tools"
@@ -94,6 +102,7 @@ command -v python3 >/dev/null 2>&1 || die "python3 is missing (comes with the Xc
 
 free_gb="$(df -g "$ROOT" | awk 'NR==2 {print $4}')"
 note "Free disk space: ${free_gb} GB"
+note "Parallel compile jobs: $JOBS (set JOBS=n to change)"
 if [[ "${free_gb:-0}" -lt 8 ]]; then
   printf '\n    \033[33mWarning:\033[0m the SDK + recompiled game need roughly 4-6 GB while building.\n'
   printf '    You have %s GB free. The build may fail part-way if the disk fills up.\n' "$free_gb"

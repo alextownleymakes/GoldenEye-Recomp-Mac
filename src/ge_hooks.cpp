@@ -24,6 +24,7 @@
 #include <rex/graphics/command_processor.h>
 #include <rex/system/xthread.h>
 #include <rex/system/kernel_state.h>
+#include <rex/input/input_system.h>  // HasPhysicalGamepad (mouse-look off with a pad)
 #include <array>
 #include <cstdlib>
 #include <cstdio>
@@ -752,11 +753,12 @@ REXCVAR_DEFINE_DOUBLE(ge_aim_turn_distance, 0.4, "Input",
 REXCVAR_DEFINE_BOOL(ge_gun_sway, true, "Input", "Gun sway as the camera turns");
 
 REXCVAR_DEFINE_DOUBLE(ge_mouse_sens, 1.0, "Input", "Mouse look sensitivity").range(0.05, 20.0);
-// Mouse-look on/off. ON: the mouse looks (added on top of the pad -- both work
-// at once, so you can put the controller down) and the cursor is captured during
-// play. OFF: no mouse-look, cursor free, controller only.
+// Mouse-look on/off. ON: the mouse looks and the cursor is captured during play.
+// OFF: no mouse-look, cursor free. Either way it is switched off automatically
+// while a real controller is connected, so the pad and the game's own aiming
+// (including auto-aim) are never touched by the mouse code.
 REXCVAR_DEFINE_BOOL(ge_mouselook_enable, true, "Input",
-                    "Mouse look (works alongside the controller; captures the cursor in-game)");
+                    "Mouse look when no controller is connected (captures the cursor in-game)");
 
 namespace {
 std::atomic<int> g_mouse_dx{0};
@@ -767,7 +769,16 @@ std::atomic<bool> g_mouselook_suppressed{false};  // set true while the pause me
 // act on the game/menu -- the menu only listens for the capture.
 std::atomic<bool> g_rebind_capturing{false};
 
-bool ge_mouselook_on() { return REXCVAR_GET(ge_mouselook_enable); }
+// True while a physical controller is plugged in / paired (keyboard emulation
+// doesn't count). Updated by the SDK every time the game polls input.
+bool ge_controller_connected() {
+  auto* ks = rex::system::kernel_state();
+  if (!ks || !ks->emulator()) return false;
+  auto* is = static_cast<rex::input::InputSystem*>(ks->emulator()->input_system());
+  return is && is->HasPhysicalGamepad();
+}
+
+bool ge_mouselook_on() { return REXCVAR_GET(ge_mouselook_enable) && !ge_controller_connected(); }
 bool ge_mouse_active();  // defined after the platform blocks below
 
 #if defined(_WIN32)
@@ -1150,6 +1161,14 @@ void ge_mouse_camera(uint8_t* base) {
   const float mdx = static_cast<float>(ge_take_mouse_dx());
   const float mdy = static_cast<float>(ge_take_mouse_dy());
 
+  // The crosshair/gun overrides below are only for mouse aiming. When the mouse
+  // hasn't moved for ~2 s (e.g. playing on a controller) they're skipped, so the
+  // game's own crosshair, aim mode and auto-aim behave exactly as normal.
+  static uint32_t frames_since_mouse = UINT32_MAX;
+  if (mdx != 0.f || mdy != 0.f) frames_since_mouse = 0;
+  else if (frames_since_mouse != UINT32_MAX) ++frames_since_mouse;
+  const bool mouse_recent = frames_since_mouse < 120;
+
   // Move the menu selection crosshair (the game's own menus read these).
   {
     float menuX = LDF32(base, GE_MENU_XY);
@@ -1209,7 +1228,22 @@ void ge_mouse_camera(uint8_t* base) {
 
   if (game_control_disabled) return;
 
+  // Auto-aim moves the crosshair toward targets (shots follow the crosshair), so
+  // never overwrite it outside aim mode while the game's Auto-Aim option is on.
+  bool game_autoaim = false;
+  if (const uint32_t sp = LD32(base, GE_SETTINGS_PTR)) {
+    game_autoaim = (LD32(base, sp + GE_SETTINGS_BITS) & GE_SET_AutoAim) != 0;
+  }
+
   const uint32_t aim_mode = LD32(base, player + GE_OFF_AIM_MODE);
+  if (!mouse_recent) {
+    // Controller in charge: only keep the camera in sync with any mouse input
+    // (none) and leave crosshair, gun and aim mode entirely to the game.
+    prev_aim_mode = aim_mode;
+    start_centering = false;
+    disable_sway = false;
+    return;
+  }
   if (aim_mode != prev_aim_mode) {
     if (aim_mode != 0) {  // entering aim mode -> reset gun position
       STF32(base, player + GE_OFF_GUN_X, 0.f);
@@ -1245,6 +1279,18 @@ void ge_mouse_camera(uint8_t* base) {
     STF32(base, player + GE_OFF_GUN_X, 0.f);
     STF32(base, player + GE_OFF_GUN_Y, 0.f);
     start_centering = false;   // nothing to centre -> no spring-back
+    disable_sway = false;
+  } else if (game_autoaim) {
+    // Mouse turns the camera; crosshair and gun stay under the game's auto-aim.
+    if (mdx != 0.f || mdy != 0.f) {
+      float camX = LDF32(base, player + GE_OFF_CAM_X);
+      float camY = LDF32(base, player + GE_OFF_CAM_Y);
+      camX += (invert_x ? -1.f : 1.f) * (mdx / 10.f) * sensitivity;
+      camY -= (invert_y ? -1.f : 1.f) * (mdy / 10.f) * sensitivity;
+      STF32(base, player + GE_OFF_CAM_X, camX);
+      STF32(base, player + GE_OFF_CAM_Y, camY);
+    }
+    start_centering = false;
     disable_sway = false;
   } else {
     float gX = LDF32(base, player + GE_OFF_GUN_X);
@@ -1344,6 +1390,12 @@ std::array<bool, 4> g_sprint_btn_prev{};
 
 // Is this virtual key (Win32 VK code space) currently held?
 bool ge_vk_is_down(uint32_t vk) {
+  // Mouse buttons (LMB/RMB/MMB/X1/X2) are ignored while a controller is
+  // connected: with a pad in use the game sees no mouse at all.
+  if ((vk == 0x01 || vk == 0x02 || vk == 0x04 || vk == 0x05 || vk == 0x06) &&
+      ge_controller_connected()) {
+    return false;
+  }
 #if defined(_WIN32)
   return (GetAsyncKeyState(static_cast<int>(vk)) & 0x8000) != 0;
 #else
@@ -1504,7 +1556,7 @@ void ge_inject_keyboard(PPCRegister& /*r11*/) {
   // raw-mouse thread only accumulates deltas while the game is focused and the
   // cursor is captured, so this is a no-op in menus / when unfocused.
   ge_start_mouse_once();
-  if (REXCVAR_GET(ge_mouselook_enable)) ge_mouse_camera(base);
+  if (ge_mouselook_on()) ge_mouse_camera(base);
 
   if (!REXCVAR_GET(ge_keyboard_enable) || !ge_input_active()) return;
 

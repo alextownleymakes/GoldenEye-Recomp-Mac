@@ -661,7 +661,7 @@ void GeMenuDialog::DrawContent(ImGuiIO& /*io*/) {
         if (callbacks_.persist_config) callbacks_.persist_config();
       }
       ImGui::TextColored(ImColor(kInkDim),
-                         "(controller still works; cursor is captured in-game, freed in this menu)");
+                         "(off automatically while a controller is connected; cursor is captured in-game)");
 
       ImGui::Spacing();
       ImGui::Separator();
