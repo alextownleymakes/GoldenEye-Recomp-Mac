@@ -8,7 +8,7 @@ The original's features carry over: keyboard and mouse, online multiplayer, grap
 * **A self-contained app.** The game files are packed inside `GoldenEye.app`; drag it to Applications.
 * **Controller support.** Xbox, PlayStation (DualSense/DualShock) and other controllers work over Bluetooth or USB.
 * **Unlimited sprint (mod).** Press **L3** (or **Shift**) to sprint; it stays on until you press it again or stop moving. **R3** still crouches. Switch to hold-to-sprint under **Controls → Sprint Mode** in the pause menu.
-* **Jump (mod).** Press **A** (Cross on PlayStation, Space on the keyboard) to jump; jump at a ledge to mantle onto it. A still opens doors and confirms menus as before. Turn it off under **Controls → Jump** in the pause menu, or set `ge_jump_height` in `ge.toml`.
+* **Jump (mod).** Press **A** (Cross on PlayStation, Space on the keyboard) to jump; jump at a ledge or a barrier to mantle onto it (experimental). A still opens doors and confirms menus as before. Turn it off under **Controls → Jump** in the pause menu, or set `ge_jump_height` in `ge.toml`.
 * **Quicksave / quickload (mod).** Emulator-style save states: click the left half of a PS4/PS5 touchpad (or press F5) to save, the right half (or F9) to load. See [Quicksave](#quicksave).
 * **A Windows build script (untested).** See [Building for Windows](#building-for-windows-untested).
 

@@ -54,13 +54,14 @@ Press **A** (Cross on PlayStation, **Space** on the keyboard) to jump. A still d
 * `ge_jump_height` in `ge.toml` sets how high (default `50`; Bond is about 170 units tall).
 * **Jump** (pause menu → Controls), or `ge_jump_enable = false` in `ge.toml`, turns it off.
 
-**Mantling.** Jump while facing a ledge and Bond climbs onto it. You can also jump and hold A as you rise past one. A "ledge" is any flat floor in the level in front of Bond, higher than a step and within reach (110 units by default, about two-thirds of his height), and wide enough to stand on. He rises with the game's own physics and is placed on top once his feet clear it.
+**Mantling.** Jump while facing something with a flat top within reach and Bond climbs onto it. You can also jump and hold A as you rise past one. That covers raised floor and ledges, and solid level pieces like the Dam's concrete barriers, bunkers and low walls (anything bullets hit). The top has to be higher than a step, no more than 110 units above his feet by default (about two-thirds of his height), wide enough to stand on, with nothing in the way over the edge and room above it. He rises with the game's own physics and is placed on top once his feet clear it.
 
-* `ge_mantle_reach` in `ge.toml` sets the highest ledge he can climb (default `110`).
+Once he's on a barrier or bunker he can walk around on it, jump, and drop off the edge back onto the floor. Those tops aren't part of the game's walkable floor, so while he's up there this mod moves him (walls are found with the same collision bullets use) and hands him back to the game the moment he steps onto real floor. He can't step off a top onto ground that isn't walkable in the normal game; that edge acts like a wall.
+
+* `ge_mantle_reach` in `ge.toml` sets the highest top he can climb (default `110`).
 * **Mantle onto ledges** (pause menu → Controls), or `ge_mantle_enable = false`, turns it off and leaves plain jumping.
-* It uses the level's floor data, so crates and other objects aren't climbable (the game has no way to stand on objects). Where a wall is thin and a higher floor sits right behind it, Bond can end up mantling through it.
-
-This is part of the source (`src/ge_hooks.cpp` + `ge_config.toml`), so every build, on any platform, gets it. It works by raising the game's own forward-speed multiplier while sprint is on, so movement still goes through the game's normal collision.
+* Movable objects (crates, drums, desks) aren't climbable.
+* This is experimental. If something goes wrong on top of an object, step off or turn mantling off.
 
 ## Quicksave (mod)
 
