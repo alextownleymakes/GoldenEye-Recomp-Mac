@@ -60,6 +60,22 @@ SDK_BUILD="$SDK_DIR/out/build/$SDK_PRESET"
 SDK_INSTALL="$SDK_DIR/out/install/$SDK_PRESET"
 GAME_PRESET="mac-$PARCH-$CFG"
 GAME_BUILD="$ROOT/out/build/$GAME_PRESET"
+
+# CMake build folders remember the absolute path they were made in. If the
+# project folder was moved or renamed, throw the stale one away (it has to be
+# rebuilt from scratch anyway) instead of failing with "CMakeCache.txt
+# directory is different".
+drop_stale_build() {  # <build dir> <source dir>
+  local cache="$1/CMakeCache.txt" src
+  [[ -f "$cache" ]] || return 0
+  src="$(sed -n 's/^CMAKE_HOME_DIRECTORY:INTERNAL=//p' "$cache" | head -1)"
+  if [[ -n "$src" && "$src" != "$2" && "$src" != "$(cd "$2" && pwd -P)" ]]; then
+    note "Project folder moved (was $src); starting a fresh build there"
+    rm -rf "$1"
+    return 1
+  fi
+  return 0
+}
 # Parallel compile jobs. The recompiled game is ~60 very large C++ files that
 # each need a lot of memory; on Macs with 16 GB or less, running one per core
 # pushes macOS into gigabytes of swap. Use half the cores there.
@@ -172,6 +188,7 @@ if [[ -f "$SDK_INSTALL/.ge-installed" && -x "$SDK_INSTALL/bin/rexglue" ]]; then
   bold "ReXGlue SDK already built ($SDK_INSTALL)"
 else
   bold "Building ReXGlue SDK (this is the long part, ~15-40 min)"
+  drop_stale_build "$SDK_BUILD" "$SDK_DIR" || true
   (cd "$SDK_DIR" && cmake --preset "$SDK_PRESET")
   (cd "$SDK_DIR" && cmake --build --preset "$SDK_PRESET-release" -j "$JOBS")
   cmake --install "$SDK_BUILD" --config Release --prefix "$SDK_INSTALL"
@@ -193,6 +210,7 @@ bold "Recompiling default.xex into C++ (generated/)"
 # --- 5. Build GoldenEye.app ------------------------------------------------------
 bold "Building GoldenEye.app ($CONFIG, $ARCH)"
 if [[ "${CLEAN:-0}" == "1" ]]; then rm -rf "$GAME_BUILD"; fi
+drop_stale_build "$GAME_BUILD" "$ROOT" || true
 (cd "$ROOT" && cmake --preset "$GAME_PRESET" -DCMAKE_PREFIX_PATH="$SDK_INSTALL")
 (cd "$ROOT" && cmake --build --preset "$GAME_PRESET" -j "$JOBS")
 

@@ -67,6 +67,56 @@ index 41e6dce..8dfbb98 100644
      target_compile_definitions(${target_name} PRIVATE
          REXGLUE_BUILD_CONFIG="$<CONFIG>")
  
+diff --git a/include/rex/audio/xma/context.h b/include/rex/audio/xma/context.h
+index 8426798..9c11d76 100644
+--- a/include/rex/audio/xma/context.h
++++ b/include/rex/audio/xma/context.h
+@@ -225,6 +225,14 @@ class XmaContext {
+   }
+   void set_is_enabled(bool is_enabled) { is_enabled_.store(is_enabled, std::memory_order_release); }
+ 
++  // GoldenEye save states: set host flags and forget any partially decoded data.
++  void GeRestore(bool allocated, bool enabled) {
++    std::lock_guard<std::mutex> lock(lock_);
++    set_is_allocated(allocated);
++    set_is_enabled(enabled);
++    ResetDecoderState();
++  }
++
+   void SignalWorkDone() {
+     if (work_completion_event_) {
+       work_completion_event_->Set();
+diff --git a/include/rex/audio/xma/decoder.h b/include/rex/audio/xma/decoder.h
+index df00f06..bc0178e 100644
+--- a/include/rex/audio/xma/decoder.h
++++ b/include/rex/audio/xma/decoder.h
+@@ -53,6 +53,12 @@ class XmaDecoder {
+   void Pause();
+   void Resume();
+ 
++  // GoldenEye save states (decoder must be paused). Context data itself lives in
++  // guest RAM; this is the host-side bookkeeping. Restore drops each context's
++  // in-flight decode so it resumes cleanly from the restored guest data.
++  void GeStateSave(std::vector<uint8_t>& out);
++  bool GeStateRestore(const uint8_t* data, size_t size);
++
+  protected:
+   int GetContextId(uint32_t guest_ptr);
+ 
+diff --git a/include/rex/chrono/clock.h b/include/rex/chrono/clock.h
+index c19caea..2cdfe97 100644
+--- a/include/rex/chrono/clock.h
++++ b/include/rex/chrono/clock.h
+@@ -71,6 +71,9 @@ class Clock {
+   // Queries the current guest tick count, accounting for frequency adjustment
+   // and scaling.
+   static uint64_t QueryGuestTickCount();
++  // GoldenEye save states: shift guest tick time so it reads `ticks` now and
++  // keeps advancing from there.
++  static void GeSetGuestTickCount(uint64_t ticks);
+   // Queries the guest time, in FILETIME format, accounting for scaling.
+   static uint64_t QueryGuestSystemTime();
+   // Queries the milliseconds since the guest began, accounting for scaling.
 diff --git a/include/rex/gpu_stall_recovery.h b/include/rex/gpu_stall_recovery.h
 new file mode 100644
 index 0000000..33d3dcc
@@ -102,6 +152,51 @@ index 0000000..33d3dcc
 +
 +}  // namespace gpu_recovery
 +}  // namespace rex
+diff --git a/include/rex/graphics/command_processor.h b/include/rex/graphics/command_processor.h
+index da8e432..263f736 100644
+--- a/include/rex/graphics/command_processor.h
++++ b/include/rex/graphics/command_processor.h
+@@ -129,6 +129,32 @@ class CommandProcessor {
+   bool Save(::rex::stream::ByteStream* stream);
+   bool Restore(::rex::stream::ByteStream* stream);
+ 
++  // GoldenEye save states.
++  // Idle: the worker is in its wait-for-commands loop with the ring drained.
++  bool GeIsIdle() const {
++    return ge_idle_.load(std::memory_order_acquire) &&
++           read_ptr_index_ == write_ptr_index_.load(std::memory_order_acquire);
++  }
++  // Ring state: {primary_buffer_ptr, primary_buffer_size, read_ptr_update_freq,
++  // read_ptr_writeback_ptr, read/write index}.
++  void GeGetRing(uint32_t out[5]) const {
++    out[0] = primary_buffer_ptr_;
++    out[1] = primary_buffer_size_;
++    out[2] = read_ptr_update_freq_;
++    out[3] = read_ptr_writeback_ptr_;
++    out[4] = read_ptr_index_;
++  }
++  // Must run ON the worker thread (via CallInThread) so the idle loop never
++  // sees a half-updated read/write pair.
++  void GeSetRingOnWorker(const uint32_t in[5]) {
++    primary_buffer_ptr_ = in[0];
++    primary_buffer_size_ = in[1];
++    read_ptr_update_freq_ = in[2];
++    read_ptr_writeback_ptr_ = in[3];
++    write_ptr_index_.store(in[4], std::memory_order_release);
++    read_ptr_index_ = in[4];
++  }
++
+  protected:
+   struct IndexBufferInfo {
+     xenos::IndexFormat format = xenos::IndexFormat::kInt16;
+@@ -267,6 +293,7 @@ class CommandProcessor {
+   Shader* active_pixel_shader_ = nullptr;
+ 
+   bool paused_ = false;
++  std::atomic<bool> ge_idle_{false};  // GoldenEye save states: in the idle wait
+ 
+   // By default (such as for tools), post-processing is disabled.
+   // "Desired" is for the external thread managing the post-processing effect.
 diff --git a/include/rex/graphics/d3d12/command_processor.h b/include/rex/graphics/d3d12/command_processor.h
 index 96d362b..23e6717 100644
 --- a/include/rex/graphics/d3d12/command_processor.h
@@ -137,6 +232,21 @@ index 96d362b..23e6717 100644
    struct FxaaConstants {
      uint32_t size[2];
      float size_inv[2];
+diff --git a/include/rex/graphics/graphics_system.h b/include/rex/graphics/graphics_system.h
+index ac6b056..ba50245 100644
+--- a/include/rex/graphics/graphics_system.h
++++ b/include/rex/graphics/graphics_system.h
+@@ -90,6 +90,10 @@ class GraphicsSystem : public system::IGraphicsSystem {
+   bool Save(::rex::stream::ByteStream* stream);
+   bool Restore(::rex::stream::ByteStream* stream);
+ 
++  bool GeStateIsIdle() override;
++  bool GeStateSave(std::vector<uint8_t>& out) override;
++  bool GeStateRestore(const uint8_t* data, size_t size) override;
++
+  protected:
+   GraphicsSystem();
+ 
 diff --git a/include/rex/graphics/vulkan/command_processor.h b/include/rex/graphics/vulkan/command_processor.h
 index 696ff48..5a1cbc6 100644
 --- a/include/rex/graphics/vulkan/command_processor.h
@@ -182,20 +292,25 @@ index 696ff48..5a1cbc6 100644
    VkPipeline resolve_downscale_pipeline_ = VK_NULL_HANDLE;
    VkBuffer resolve_downscale_buffer_ = VK_NULL_HANDLE;
 diff --git a/include/rex/input/input_system.h b/include/rex/input/input_system.h
-index 0c27eed..8ae8143 100644
+index 0c27eed..c1d912b 100644
 --- a/include/rex/input/input_system.h
 +++ b/include/rex/input/input_system.h
-@@ -65,6 +65,9 @@ class InputSystem : public system::IInputSystem {
+@@ -65,6 +65,14 @@ class InputSystem : public system::IInputSystem {
    std::bitset<kMaxGuestUsers> GetConnectedUsers() const { return connected_users_; }
    /// Guest user whose device most recently produced a button press.
    uint32_t GetLastUsedUser() const { return last_used_user_; }
 +  /// GoldenEye fork: true while a real controller (not keyboard/mouse
 +  /// emulation) is connected. Updated whenever the guest polls input.
 +  bool HasPhysicalGamepad() const { return has_physical_gamepad_.load(std::memory_order_relaxed); }
++
++  /// GoldenEye fork: touchpad clicks on PS4/PS5 controllers, split by which
++  /// half of the pad the finger was on. Take returns and clears the counts.
++  static void GeRecordTouchpadClick(bool right_half);
++  static void GeTakeTouchpadClicks(uint32_t* left, uint32_t* right);
  
   private:
    using JoystickValue = std::pair<uint16_t, uint16_t>;
-@@ -99,6 +102,7 @@ class InputSystem : public system::IInputSystem {
+@@ -99,6 +107,7 @@ class InputSystem : public system::IInputSystem {
    std::array<std::pair<JoystickValue, JoystickValue>, kMaxGuestUsers> user_max_joystick_value_ = {};
  
    std::atomic<int> ui_input_blockers_{0};
@@ -233,6 +348,118 @@ index 9672d33..5de89ab 100644
   private:
    std::function<void(PathConfig)> MakeResumeCallback();
  
+diff --git a/include/rex/system/ge_savestate.h b/include/rex/system/ge_savestate.h
+new file mode 100644
+index 0000000..8e63ea6
+--- /dev/null
++++ b/include/rex/system/ge_savestate.h
+@@ -0,0 +1,77 @@
++/**
++ * GoldenEye fork: quicksave / quickload ("freeze / thaw") for a recompiled title.
++ *
++ * An emulator can snapshot the whole virtual machine at any instant. A recompiled
++ * game cannot: part of its live state is the host call stack of each thread. So a
++ * snapshot is only taken (and only restored) at a *safe point*: the calling guest
++ * thread is at a fixed hook site, and every other guest-code-running thread is
++ * parked inside a kernel wait (so its host stack holds nothing but the wait).
++ *
++ * Guest execution accounting: every host->guest entry (FunctionDispatcher) and
++ * every blocking kernel wait report through ExecScope / BlockScope. While a
++ * snapshot is in progress, threads trying to (re)enter guest code are held at a
++ * gate until it finishes.
++ *
++ * What is captured: all guest memory (page tables + contents), every running guest
++ * thread's registers, kernel event / semaphore signal state, the GPU command
++ * processor's ring pointers and register file, XMA decoder state, guest time.
++ * On restore every thread must be parked at the same place it was when saved
++ * (same stack pointer / return address); otherwise the load is refused.
++ */
++#pragma once
++
++#include <cstdint>
++#include <filesystem>
++#include <string>
++#include <vector>
++
++namespace rex::system::ge_state {
++
++// --- Guest execution accounting (used by the runtime; not for game code) -----
++// A thread is "counted" while it runs guest code outside a kernel wait.
++struct ExecScope {
++  ExecScope();
++  ~ExecScope();
++  ExecScope(const ExecScope&) = delete;
++  ExecScope& operator=(const ExecScope&) = delete;
++
++ private:
++  bool prev_;
++};
++struct BlockScope {
++  BlockScope();
++  ~BlockScope();
++  BlockScope(const BlockScope&) = delete;
++  BlockScope& operator=(const BlockScope&) = delete;
++
++ private:
++  bool prev_;
++};
++
++// True while a save or load has the game frozen (host-side helpers that poke guest
++// memory, e.g. watchdogs, should stand down).
++bool InProgress();
++
++// --- Save / load ----------------------------------------------------------------
++enum class Result {
++  kOk,        // done
++  kBusy,      // not at a safe moment; try again next frame
++  kNoState,   // (load) no save file
++  kMismatch,  // (load) the game is not in a state this save can be restored into
++  kFailed,    // error (see message)
++};
++
++// Both must be called on a guest thread from inside a game hook (the safe point).
++// `site_id` identifies the hook so a state is only restored at the hook it was
++// saved at. `message` receives a short human-readable result.
++// `first_attempt`: the first try of a request may wait longer (~120 ms) for the
++// game to go quiet; retries on later frames wait ~30 ms so play stays smooth.
++Result Save(const std::filesystem::path& file, uint32_t site_id, bool first_attempt,
++            std::string* message);
++Result Load(const std::filesystem::path& file, uint32_t site_id, bool first_attempt,
++            std::string* message);
++
++// Small growable byte buffer used by subsystem snapshot helpers.
++using Blob = std::vector<uint8_t>;
++
++}  // namespace rex::system::ge_state
+diff --git a/include/rex/system/interfaces/graphics.h b/include/rex/system/interfaces/graphics.h
+index d54df86..24f4494 100644
+--- a/include/rex/system/interfaces/graphics.h
++++ b/include/rex/system/interfaces/graphics.h
+@@ -11,6 +11,8 @@
+ 
+ #pragma once
+ 
++#include <cstdint>
++#include <vector>
+ #include <cstdint>
+ #include <filesystem>
+ 
+@@ -92,6 +94,15 @@ class IGraphicsSystem {
+   }
+ 
+   virtual void Shutdown() = 0;
++
++  // GoldenEye save states. Only meaningful while every guest thread is parked.
++  // GeStateIsIdle: the GPU has drained everything submitted to it.
++  // GeStateSave appends the GPU's ring position to `out`; GeStateRestore puts
++  // it back (from data written by GeStateSave) and flushes GPU-side caches of
++  // guest memory. Default: unsupported.
++  virtual bool GeStateIsIdle() { return false; }
++  virtual bool GeStateSave(std::vector<uint8_t>& out) { return false; }
++  virtual bool GeStateRestore(const uint8_t* data, size_t size) { return false; }
+ };
+ 
+ }  // namespace rex::system
 diff --git a/include/rex/system/kernel_state.h b/include/rex/system/kernel_state.h
 index 9b9cf9e..2b06a03 100644
 --- a/include/rex/system/kernel_state.h
@@ -261,7 +488,7 @@ index ec37017..f3d5479 100644
    uint32_t type() const { return 1 | 2; /* local | online profile? */ }
  
 diff --git a/include/rex/system/xevent.h b/include/rex/system/xevent.h
-index e81df52..76c32c9 100644
+index e81df52..e2b8316 100644
 --- a/include/rex/system/xevent.h
 +++ b/include/rex/system/xevent.h
 @@ -10,6 +10,8 @@
@@ -273,8 +500,13 @@ index e81df52..76c32c9 100644
  #include <rex/system/xobject.h>
  #include <rex/system/xtypes.h>
  #include <rex/thread.h>
-@@ -42,12 +44,27 @@ class XEvent : public XObject {
+@@ -40,14 +42,32 @@ class XEvent : public XObject {
+   void Clear();
+ 
    bool Save(stream::ByteStream* stream) override;
++  // GoldenEye save states: host-side signal state (guest header lives in RAM).
++  bool GeGetState(bool* render_pending);
++  void GeSetState(bool signaled, bool render_pending);
    static object_ref<XEvent> Restore(KernelState* kernel_state, stream::ByteStream* stream);
  
 +  // Mark this as an event the GPU completion interrupt signals the render thread
@@ -301,6 +533,65 @@ index e81df52..76c32c9 100644
  };
  
  }  // namespace rex::system
+diff --git a/include/rex/system/xmemory.h b/include/rex/system/xmemory.h
+index 0c39a42..ea62587 100644
+--- a/include/rex/system/xmemory.h
++++ b/include/rex/system/xmemory.h
+@@ -60,6 +60,16 @@ inline T GuestPtr(u8* base, u32 guest_address) noexcept {
+ 
+ class Memory;
+ 
++// GoldenEye save states: byte sink / source for heap snapshots.
++struct GeStateSink {
++  virtual ~GeStateSink() = default;
++  virtual void Write(const void* data, size_t size) = 0;
++};
++struct GeStateSource {
++  virtual ~GeStateSource() = default;
++  virtual bool Read(void* data, size_t size) = 0;
++};
++
+ enum SystemHeapFlag : uint32_t {
+   kSystemHeapVirtual = 1 << 0,
+   kSystemHeapPhysical = 1 << 1,
+@@ -225,6 +235,11 @@ class BaseHeap {
+   bool Save(stream::ByteStream* stream);
+   bool Restore(stream::ByteStream* stream);
+ 
++  // GoldenEye save states. Page table always; page contents when `contents`
++  // (physical views alias the physical heap, so they save only their table).
++  bool GeSave(GeStateSink& sink, bool contents);
++  bool GeRestore(GeStateSource& source, bool contents);
++
+   void Reset();
+ 
+  protected:
+@@ -544,6 +559,11 @@ class Memory {
+   bool Save(stream::ByteStream* stream);
+   bool Restore(stream::ByteStream* stream);
+ 
++  // GoldenEye save states: every heap's page table plus guest memory contents.
++  // Callers must hold the global critical region and keep all guest code parked.
++  bool GeSaveState(GeStateSink& sink);
++  bool GeRestoreState(GeStateSource& source);
++
+   //==========================================================================
+   // Recompiled Code Function Table API
+   //==========================================================================
+diff --git a/include/rex/system/xsemaphore.h b/include/rex/system/xsemaphore.h
+index 7c778fe..a1400bb 100644
+--- a/include/rex/system/xsemaphore.h
++++ b/include/rex/system/xsemaphore.h
+@@ -37,6 +37,9 @@ class XSemaphore : public XObject {
+   int32_t maximum_count() const { return static_cast<int32_t>(maximum_count_); }
+ 
+   bool Save(stream::ByteStream* stream) override;
++  // GoldenEye save states: current count (probing restores it).
++  int32_t GeGetCount();
++  void GeSetCount(int32_t count);
+   static object_ref<XSemaphore> Restore(KernelState* kernel_state, stream::ByteStream* stream);
+ 
+  protected:
 diff --git a/resources/templates/codegen/init_cpp.inja b/resources/templates/codegen/init_cpp.inja
 index 1be4759..0d3e207 100644
 --- a/resources/templates/codegen/init_cpp.inja
@@ -385,6 +676,81 @@ index 20a2cd8..c7e914f 100644
        }
        if (!SDL_PutAudioStreamData(stream, data, len)) {
          REXAPU_ERROR("SDL_PutAudioStreamData() failed: {}", SDL_GetError());
+diff --git a/src/audio/xma_decoder.cpp b/src/audio/xma_decoder.cpp
+index a0a178d..78df2a9 100644
+--- a/src/audio/xma_decoder.cpp
++++ b/src/audio/xma_decoder.cpp
+@@ -9,6 +9,7 @@
+  * @modified    Tom Clay, 2026 - Adapted for ReXGlue runtime
+  */
+ 
++#include <cstring>
+ #include <rex/audio/xma/context.h>
+ #include <rex/audio/xma/decoder.h>
+ #include <rex/cvar.h>
+@@ -354,6 +355,62 @@ void XmaDecoder::WriteRegister(uint32_t addr, uint32_t value) {
+   }
+ }
+ 
++namespace {
++constexpr uint32_t kGeXmaStateMagic = 0x4745584D;  // 'GEXM'
++}
++
++void XmaDecoder::GeStateSave(std::vector<uint8_t>& out) {
++  auto put = [&out](const void* p, size_t n) {
++    const auto* b = static_cast<const uint8_t*>(p);
++    out.insert(out.end(), b, b + n);
++  };
++  const uint32_t magic = kGeXmaStateMagic, count = kContextCount;
++  put(&magic, 4);
++  put(&count, 4);
++  put(register_file_.values, sizeof(register_file_.values));
++  const auto& bits = context_bitmap_.data();
++  const uint32_t words = uint32_t(bits.size());
++  put(&words, 4);
++  put(bits.data(), bits.size() * sizeof(uint64_t));
++  put(&context_data_first_ptr_, 4);
++  put(&context_data_last_ptr_, 4);
++  for (uint32_t i = 0; i < kContextCount; ++i) {
++    const uint8_t flags =
++        uint8_t((contexts_[i].is_allocated() ? 1 : 0) | (contexts_[i].is_enabled() ? 2 : 0));
++    put(&flags, 1);
++  }
++}
++
++bool XmaDecoder::GeStateRestore(const uint8_t* data, size_t size) {
++  size_t off = 0;
++  auto get = [&](void* p, size_t n) {
++    if (off + n > size) return false;
++    std::memcpy(p, data + off, n);
++    off += n;
++    return true;
++  };
++  uint32_t magic = 0, count = 0, words = 0;
++  if (!get(&magic, 4) || !get(&count, 4) || magic != kGeXmaStateMagic || count != kContextCount) {
++    return false;
++  }
++  if (!get(register_file_.values, sizeof(register_file_.values)) || !get(&words, 4)) {
++    return false;
++  }
++  auto& bits = context_bitmap_.data();
++  if (words != bits.size() || !get(bits.data(), words * sizeof(uint64_t))) {
++    return false;
++  }
++  if (!get(&context_data_first_ptr_, 4) || !get(&context_data_last_ptr_, 4)) {
++    return false;
++  }
++  for (uint32_t i = 0; i < kContextCount; ++i) {
++    uint8_t flags = 0;
++    if (!get(&flags, 1)) return false;
++    contexts_[i].GeRestore((flags & 1) != 0, (flags & 2) != 0);
++  }
++  return true;
++}
++
+ void XmaDecoder::Pause() {
+   if (paused_) {
+     return;
 diff --git a/src/codegen/builders.h b/src/codegen/builders.h
 index 24894f2..2b5aff9 100644
 --- a/src/codegen/builders.h
@@ -548,7 +914,7 @@ index 40ae269..016c47d 100644
        {PPC_INST_BLR, build_blr},
        {PPC_INST_BLRL, build_blrl},
 diff --git a/src/core/clock.cpp b/src/core/clock.cpp
-index ae72b7a..237315f 100644
+index ae72b7a..54eb34b 100644
 --- a/src/core/clock.cpp
 +++ b/src/core/clock.cpp
 @@ -10,6 +10,7 @@
@@ -583,7 +949,7 @@ index ae72b7a..237315f 100644
  // Last sampled host tick count.
  uint64_t last_host_tick_count_ = Clock::QueryHostTickCount();
  // Mutex to ensure last_host_tick_count_ and last_guest_tick_count_ are in sync
-@@ -61,31 +68,25 @@ void RecomputeGuestTickScalar() {
+@@ -61,31 +68,30 @@ void RecomputeGuestTickScalar() {
    guest_tick_ratio_ = frac;
  }
  
@@ -600,6 +966,10 @@ index ae72b7a..237315f 100644
 +// on other threads; worse at higher fps because the spin hammers harder). Removing
 +// the lock removes the failure mode entirely -- there is no holder to stall.
 +// 128-bit intermediate avoids overflow and integer-division truncation.
++// GoldenEye save states: added to every guest tick read, so a quickload can put
++// guest time back to the moment of the save (games time frames off it).
++std::atomic<int64_t> ge_guest_tick_offset_{0};
++
  uint64_t UpdateGuestClock() {
    uint64_t host_tick_count = Clock::QueryHostTickCount();
 -
@@ -628,10 +998,23 @@ index ae72b7a..237315f 100644
 +  // ratio is reduced (small numerator), so host_tick_count * first does not
 +  // overflow for millennia of uptime. Identical math to the clock_no_scaling path.
 +  auto ratio = guest_tick_ratio_;
-+  return host_tick_count * ratio.first / ratio.second;
++  return host_tick_count * ratio.first / ratio.second +
++         uint64_t(ge_guest_tick_offset_.load(std::memory_order_relaxed));
  }
  
  // Offset of the current guest system file time relative to the guest base time.
+@@ -155,6 +161,11 @@ void Clock::set_guest_system_time_base(uint64_t time_base) {
+   guest_system_time_base_ = time_base;
+ }
+ 
++void Clock::GeSetGuestTickCount(uint64_t ticks) {
++  const int64_t delta = int64_t(ticks - UpdateGuestClock());
++  ge_guest_tick_offset_.fetch_add(delta, std::memory_order_relaxed);
++}
++
+ uint64_t Clock::QueryGuestTickCount() {
+   auto guest_tick_count = UpdateGuestClock();
+   return guest_tick_count;
 diff --git a/src/core/logging.cpp b/src/core/logging.cpp
 index e8de147..b2ec2fe 100644
 --- a/src/core/logging.cpp
@@ -694,7 +1077,7 @@ index e8de147..b2ec2fe 100644
    for (auto& entry : g_registry) {
      if (entry.name.empty())
 diff --git a/src/graphics/command_processor.cpp b/src/graphics/command_processor.cpp
-index a744375..6311e35 100644
+index a744375..7856a7d 100644
 --- a/src/graphics/command_processor.cpp
 +++ b/src/graphics/command_processor.cpp
 @@ -35,7 +35,22 @@
@@ -739,7 +1122,23 @@ index a744375..6311e35 100644
                      "Compile shaders and create pipelines asynchronously in background "
                      "threads. This reduces stutter but may cause brief visual artifacts while "
                      "pipelines are being prepared.")
-@@ -248,6 +272,14 @@ void CommandProcessor::WorkerThreadMain() {
+@@ -217,6 +241,7 @@ void CommandProcessor::WorkerThreadMain() {
+       // We spin here waiting for new ones, as the overhead of waiting on our
+       // event is too high.
+       PrepareForWait();
++      ge_idle_.store(true, std::memory_order_release);
+       uint32_t loop_count = 0;
+       do {
+         // If we spin around too much, revert to a "low-power" state.
+@@ -231,6 +256,7 @@ void CommandProcessor::WorkerThreadMain() {
+         write_ptr_index = write_ptr_index_.load();
+       } while (worker_running_ && pending_fns_.empty() &&
+                (write_ptr_index == 0xBAADF00D || read_ptr_index_ == write_ptr_index));
++      ge_idle_.store(false, std::memory_order_release);
+       ReturnFromWait();
+       if (!worker_running_ || !pending_fns_.empty()) {
+         continue;
+@@ -248,6 +274,14 @@ void CommandProcessor::WorkerThreadMain() {
                                         read_ptr_index_);
      }
  
@@ -754,7 +1153,7 @@ index a744375..6311e35 100644
      // FIXME: We're supposed to process the WAIT_UNTIL register at this point,
      // but no games seem to actually use it.
    }
-@@ -332,6 +364,7 @@ void CommandProcessor::UpdateWritePointer(uint32_t value) {
+@@ -332,6 +366,7 @@ void CommandProcessor::UpdateWritePointer(uint32_t value) {
    write_ptr_index_event_->Set();
  }
  
@@ -762,7 +1161,7 @@ index a744375..6311e35 100644
  uint32_t CommandProcessor::ReadRegisterValue(uint32_t index) const {
    if (index < RegisterFile::kRegisterCount) {
      return register_file_->values[index];
-@@ -989,6 +1022,18 @@ bool CommandProcessor::ExecutePacketType3_WAIT_REG_MEM(memory::RingBuffer* reade
+@@ -989,6 +1024,18 @@ bool CommandProcessor::ExecutePacketType3_WAIT_REG_MEM(memory::RingBuffer* reade
  
    bool is_memory = (wait_info & 0x10) != 0;
  
@@ -781,7 +1180,7 @@ index a744375..6311e35 100644
    bool matched = false;
    do {
      uint32_t value = 0;
-@@ -1030,6 +1075,13 @@ bool CommandProcessor::ExecutePacketType3_WAIT_REG_MEM(memory::RingBuffer* reade
+@@ -1030,6 +1077,13 @@ bool CommandProcessor::ExecutePacketType3_WAIT_REG_MEM(memory::RingBuffer* reade
          break;
      }
      if (!matched) {
@@ -795,7 +1194,7 @@ index a744375..6311e35 100644
        // Wait.
        if (wait >= 0x100) {
          PrepareForWait();
-@@ -1037,7 +1089,12 @@ bool CommandProcessor::ExecutePacketType3_WAIT_REG_MEM(memory::RingBuffer* reade
+@@ -1037,7 +1091,12 @@ bool CommandProcessor::ExecutePacketType3_WAIT_REG_MEM(memory::RingBuffer* reade
            // User wants it fast and dangerous.
            rex::thread::MaybeYield();
          } else {
@@ -991,10 +1390,17 @@ index 19874a5..f797ba1 100644
    return IssueCopy_ReadbackResolvePath();
  }
 diff --git a/src/graphics/graphics_system.cpp b/src/graphics/graphics_system.cpp
-index 8f2fcb0..786524c 100644
+index 8f2fcb0..57dc889 100644
 --- a/src/graphics/graphics_system.cpp
 +++ b/src/graphics/graphics_system.cpp
-@@ -20,6 +20,7 @@
+@@ -14,12 +14,14 @@
+ #include <algorithm>
+ #include <cctype>
+ #include <cstdint>
++#include <cstring>
+ #include <functional>
+ #include <memory>
+ #include <mutex>
  #include <utility>
  
  #include <rex/cvar.h>
@@ -1002,7 +1408,7 @@ index 8f2fcb0..786524c 100644
  #include <rex/graphics/command_processor.h>
  #include <rex/graphics/flags.h>
  #include <rex/kernel/xboxkrnl/video.h>
-@@ -31,14 +32,22 @@
+@@ -31,14 +33,22 @@
  #include <rex/ui/window.h>
  #include <rex/ui/windowed_app_context.h>
  
@@ -1026,7 +1432,7 @@ index 8f2fcb0..786524c 100644
  namespace {
  
  rex::graphics::CommandProcessor::SwapPostEffect ParseSwapPostEffect(
-@@ -159,12 +168,39 @@ X_STATUS GraphicsSystem::SetupGuestGpu(runtime::FunctionDispatcher* function_dis
+@@ -159,12 +169,39 @@ X_STATUS GraphicsSystem::SetupGuestGpu(runtime::FunctionDispatcher* function_dis
          uint64_t no_vsync_interval_ticks = std::max(uint64_t(1), guest_tick_frequency / 1000);
          uint64_t last_frame_time = chrono::Clock::QueryGuestTickCount();
          while (vsync_worker_running_) {
@@ -1069,7 +1475,7 @@ index 8f2fcb0..786524c 100644
            }
            rex::thread::Sleep(std::chrono::milliseconds(1));
          }
-@@ -312,8 +348,12 @@ void GraphicsSystem::DispatchInterruptCallback(uint32_t source, uint32_t cpu) {
+@@ -312,8 +349,12 @@ void GraphicsSystem::DispatchInterruptCallback(uint32_t source, uint32_t cpu) {
    //          interrupt_callback_, source, cpu);
  
    uint64_t args[] = {source, interrupt_callback_data_};
@@ -1082,6 +1488,60 @@ index 8f2fcb0..786524c 100644
  }
  
  void GraphicsSystem::MarkVblank() {
+@@ -374,6 +415,53 @@ void GraphicsSystem::Resume() {
+   command_processor_->Resume();
+ }
+ 
++// GoldenEye save states -------------------------------------------------------
++namespace {
++constexpr uint32_t kGeGpuStateMagic = 0x47454750;  // 'GEGP'
++}
++
++bool GraphicsSystem::GeStateIsIdle() {
++  return command_processor_ && command_processor_->GeIsIdle();
++}
++
++bool GraphicsSystem::GeStateSave(std::vector<uint8_t>& out) {
++  if (!GeStateIsIdle()) {
++    return false;
++  }
++  uint32_t words[7] = {kGeGpuStateMagic};
++  command_processor_->GeGetRing(&words[1]);
++  words[6] = command_processor_->counter();
++  const auto* bytes = reinterpret_cast<const uint8_t*>(words);
++  out.insert(out.end(), bytes, bytes + sizeof(words));
++  return true;
++}
++
++bool GraphicsSystem::GeStateRestore(const uint8_t* data, size_t size) {
++  uint32_t words[7];
++  if (size < sizeof(words) || !command_processor_) {
++    return false;
++  }
++  std::memcpy(words, data, sizeof(words));
++  if (words[0] != kGeGpuStateMagic || !GeStateIsIdle()) {
++    return false;
++  }
++  // Put the ring back where the restored guest expects it and drop every GPU
++  // copy of guest memory (textures, render targets, vertex data): all of it is
++  // re-read from the restored RAM. Runs on the GPU worker, which is idle.
++  rex::thread::Fence fence;
++  command_processor_->CallInThread([this, &words, &fence]() {
++    command_processor_->GeSetRingOnWorker(&words[1]);
++    if (words[3]) {
++      memory::store_and_swap<uint32_t>(memory_->TranslatePhysical(words[3]), words[5]);
++    }
++    command_processor_->InvalidateGpuMemory();
++    command_processor_->ClearCaches();
++    fence.Signal();
++  });
++  fence.Wait();
++  return true;
++}
++
+ bool GraphicsSystem::Save(::rex::stream::ByteStream* stream) {
+   stream->Write<uint32_t>(interrupt_callback_);
+   stream->Write<uint32_t>(interrupt_callback_data_);
 diff --git a/src/graphics/pipeline/render_target/cache.cpp b/src/graphics/pipeline/render_target/cache.cpp
 index 953c5fd..5e13ce1 100644
 --- a/src/graphics/pipeline/render_target/cache.cpp
@@ -2034,7 +2494,7 @@ index 001f36b..7e33af0 100644
            }
  
 diff --git a/src/input/input_system.cpp b/src/input/input_system.cpp
-index 40740ee..8280cbe 100644
+index 40740ee..69a9ea4 100644
 --- a/src/input/input_system.cpp
 +++ b/src/input/input_system.cpp
 @@ -168,6 +168,11 @@ void InputSystem::RefreshDevices() {
@@ -2049,6 +2509,63 @@ index 40740ee..8280cbe 100644
    devices_.clear();
    device_owners_.clear();
    for (size_t i : order) {
+@@ -522,4 +527,18 @@ std::unique_ptr<InputSystem> CreateDefaultInputSystem(bool tool_mode) {
+   return input;
+ }
+ 
++namespace {
++std::atomic<uint32_t> ge_touchpad_left_{0};
++std::atomic<uint32_t> ge_touchpad_right_{0};
++}  // namespace
++
++void InputSystem::GeRecordTouchpadClick(bool right_half) {
++  (right_half ? ge_touchpad_right_ : ge_touchpad_left_).fetch_add(1, std::memory_order_relaxed);
++}
++
++void InputSystem::GeTakeTouchpadClicks(uint32_t* left, uint32_t* right) {
++  *left = ge_touchpad_left_.exchange(0, std::memory_order_relaxed);
++  *right = ge_touchpad_right_.exchange(0, std::memory_order_relaxed);
++}
++
+ }  // namespace rex::input
+diff --git a/src/input/sdl/sdl_input_driver.cpp b/src/input/sdl/sdl_input_driver.cpp
+index 57f65c4..4180082 100644
+--- a/src/input/sdl/sdl_input_driver.cpp
++++ b/src/input/sdl/sdl_input_driver.cpp
+@@ -19,6 +19,7 @@
+ #include <rex/chrono/clock.h>
+ #include <rex/cvar.h>
+ #include <rex/input/flags.h>
++#include <rex/input/input_system.h>
+ #include <rex/input/sdl/sdl_input_driver.h>
+ #include <rex/logging.h>
+ #include <rex/ui/virtual_key.h>
+@@ -732,6 +733,25 @@ void SDLInputDriver::OnControllerDeviceButtonChangedLocked(const SDL_Event& even
+   }
+   auto& controller = controllers_.at(*idx);
+ 
++  // GoldenEye fork: the PS4/PS5 touchpad click is reported as one button plus
++  // finger positions. Record which half was pressed (quicksave / quickload);
++  // it is not passed to the game.
++  if (event.gbutton.button == SDL_GAMEPAD_BUTTON_TOUCHPAD) {
++    if (event.gbutton.down) {
++      for (int finger = 0; finger < 2; ++finger) {
++        bool finger_down = false;
++        float x = 0.0f, y = 0.0f, pressure = 0.0f;
++        if (SDL_GetGamepadTouchpadFinger(controller.sdl, 0, finger, &finger_down, &x, &y,
++                                         &pressure) &&
++            finger_down) {
++          InputSystem::GeRecordTouchpadClick(x >= 0.5f);
++          break;
++        }
++      }
++    }
++    return;
++  }
++
+   uint16_t xbuttons = controller.state.gamepad.buttons;
+   // Lookup the XInput button code.
+   if (event.gbutton.button >= xbutton_lookup.size()) {
 diff --git a/src/kernel/CMakeLists.txt b/src/kernel/CMakeLists.txt
 index 984b97d..8c9afc2 100644
 --- a/src/kernel/CMakeLists.txt
@@ -3284,6 +3801,832 @@ index becc71e..8791481 100644
  
    rex::cvar::RegisterCliOptions(app);
  
+diff --git a/src/system/CMakeLists.txt b/src/system/CMakeLists.txt
+index 05979a3..2161c47 100644
+--- a/src/system/CMakeLists.txt
++++ b/src/system/CMakeLists.txt
+@@ -42,6 +42,7 @@ set(REXSYSTEM_SOURCES
+     map_parser.cpp
+     module.cpp
+     function_dispatcher.cpp
++    ge_savestate.cpp
+     gpu_plugin_loader.cpp
+     thread.cpp
+     thread_state.cpp
+@@ -108,6 +109,11 @@ if(REXGLUE_ENABLE_PERF_COUNTERS)
+         $<$<NOT:$<CONFIG:Release>>:REXGLUE_ENABLE_PERF_COUNTERS>)
+ endif()
+ 
++if(APPLE)
++    # GoldenEye save states compress with Apple's LZ4 (libcompression).
++    target_link_libraries(rexruntime PRIVATE compression)
++endif()
++
+ if(WIN32)
+     target_link_libraries(rexruntime PRIVATE ws2_32)
+     target_link_libraries(rexruntime PUBLIC dxgi dxguid)
+diff --git a/src/system/function_dispatcher.cpp b/src/system/function_dispatcher.cpp
+index bd43109..107b4cc 100644
+--- a/src/system/function_dispatcher.cpp
++++ b/src/system/function_dispatcher.cpp
+@@ -21,6 +21,7 @@
+ #include <rex/ppc/context.h>
+ #include <rex/runtime.h>
+ #include <rex/system/function_dispatcher.h>
++#include <rex/system/ge_savestate.h>
+ #include <rex/system/thread_state.h>
+ 
+ namespace rex::runtime {
+@@ -58,6 +59,7 @@ FunctionDispatcher::FunctionDispatcher(rex::memory::Memory* memory, ExportResolv
+ FunctionDispatcher::~FunctionDispatcher() = default;
+ 
+ bool FunctionDispatcher::Execute(ThreadState* thread_state, uint32_t address) {
++  rex::system::ge_state::ExecScope ge_exec_scope;  // save-state gate
+   SCOPE_profile_cpu_f("cpu");
+   PROFILE_FUNCTION_DISPATCHED();
+ 
+@@ -90,6 +92,7 @@ bool FunctionDispatcher::Execute(ThreadState* thread_state, uint32_t address) {
+ 
+ uint64_t FunctionDispatcher::Execute(ThreadState* thread_state, uint32_t address, uint64_t args[],
+                                      size_t arg_count) {
++  rex::system::ge_state::ExecScope ge_exec_scope;  // save-state gate (before ctx writes)
+   SCOPE_profile_cpu_f("cpu");
+ 
+   auto* ctx = thread_state->context();
+@@ -129,6 +132,7 @@ uint64_t FunctionDispatcher::Execute(ThreadState* thread_state, uint32_t address
+ 
+ uint64_t FunctionDispatcher::ExecuteTrap(ThreadState* thread_state, uint32_t address,
+                                          uint64_t args[], size_t arg_count) {
++  rex::system::ge_state::ExecScope ge_exec_scope;  // save-state gate
+   auto* ctx = thread_state->context();
+   PPCContext saved = *ctx;
+ 
+@@ -141,6 +145,8 @@ uint64_t FunctionDispatcher::ExecuteTrap(ThreadState* thread_state, uint32_t add
+ 
+ uint64_t FunctionDispatcher::ExecuteInterrupt(ThreadState* thread_state, uint32_t address,
+                                               uint64_t args[], size_t arg_count) {
++  // Save-state gate BEFORE taking the global lock: a snapshot needs that lock.
++  rex::system::ge_state::ExecScope ge_exec_scope;
+   SCOPE_profile_cpu_f("cpu");
+   PROFILE_INTERRUPT_DISPATCHED();
+ 
+diff --git a/src/system/ge_savestate.cpp b/src/system/ge_savestate.cpp
+new file mode 100644
+index 0000000..a585814
+--- /dev/null
++++ b/src/system/ge_savestate.cpp
+@@ -0,0 +1,751 @@
++/**
++ * GoldenEye fork: quicksave / quickload. See include/rex/system/ge_savestate.h.
++ */
++#include <rex/system/ge_savestate.h>
++
++#include <algorithm>
++#include <atomic>
++#include <chrono>
++#include <condition_variable>
++#include <cstring>
++#include <fstream>
++#include <mutex>
++#include <thread>
++
++#if defined(__APPLE__)
++#include <compression.h>
++#endif
++
++#include <rex/audio/audio_system.h>
++#include <rex/audio/xma/decoder.h>
++#include <rex/chrono/clock.h>
++#include <rex/logging.h>
++#include <rex/memory/utils.h>
++#include <rex/ppc/context.h>
++#include <rex/runtime.h>
++#include <rex/system/interfaces/graphics.h>
++#include <rex/system/kernel_state.h>
++#include <rex/system/thread_state.h>
++#include <rex/system/xevent.h>
++#include <rex/system/xfile.h>
++#include <rex/system/xmemory.h>
++#include <rex/system/xsemaphore.h>
++#include <rex/system/xthread.h>
++
++namespace rex::system::ge_state {
++
++// ============================================================================
++// Guest execution accounting + gate
++// ============================================================================
++namespace {
++std::atomic<int> g_running{0};        // threads running guest code (outside waits)
++std::atomic<bool> g_active{false};    // a snapshot is in progress: hold everyone else
++std::mutex g_gate_mutex;
++std::condition_variable g_gate_cv;
++thread_local bool t_counted = false;
++
++// Diagnostics: which threads are currently counted (to name them when a freeze
++// can't get everyone parked).
++struct ThreadInfo {
++  std::atomic<bool> counted{false};
++  std::string name;
++};
++std::mutex g_registry_mutex;
++std::vector<ThreadInfo*> g_registry;
++thread_local ThreadInfo* t_info = nullptr;
++
++ThreadInfo* CurrentInfo() {
++  if (!t_info) {
++    t_info = new ThreadInfo();  // lives for the process (threads are long-lived)
++    if (XThread::IsInThread()) {
++      auto* xt = XThread::GetCurrentThread();
++      t_info->name = xt->name().empty() ? "guest thread" : xt->name();
++      char buf[32];
++      std::snprintf(buf, sizeof(buf), " (%08X)", xt->handle());
++      t_info->name += buf;
++    } else {
++      t_info->name = "host thread";
++    }
++    std::lock_guard<std::mutex> lock(g_registry_mutex);
++    g_registry.push_back(t_info);
++  }
++  return t_info;
++}
++
++std::string CountedThreadNames() {
++  std::string out;
++  std::lock_guard<std::mutex> lock(g_registry_mutex);
++  for (ThreadInfo* info : g_registry) {
++    if (info != t_info && info->counted.load()) {
++      if (!out.empty()) out += ", ";
++      out += info->name;
++    }
++  }
++  return out;
++}
++
++void SetCounted(bool counted) {
++  if (counted == t_counted) {
++    return;
++  }
++  CurrentInfo()->counted.store(counted);
++  if (counted) {
++    for (;;) {
++      g_running.fetch_add(1, std::memory_order_seq_cst);
++      if (!g_active.load(std::memory_order_seq_cst)) {
++        break;
++      }
++      // A snapshot is running: step back out and wait for it to finish.
++      g_running.fetch_sub(1, std::memory_order_seq_cst);
++      std::unique_lock<std::mutex> lock(g_gate_mutex);
++      g_gate_cv.wait(lock, [] { return !g_active.load(std::memory_order_seq_cst); });
++    }
++  } else {
++    g_running.fetch_sub(1, std::memory_order_seq_cst);
++  }
++  t_counted = counted;
++}
++}  // namespace
++
++bool InProgress() { return g_active.load(std::memory_order_relaxed); }
++
++ExecScope::ExecScope() : prev_(t_counted) { SetCounted(true); }
++ExecScope::~ExecScope() { SetCounted(prev_); }
++BlockScope::BlockScope() : prev_(t_counted) { SetCounted(false); }
++BlockScope::~BlockScope() { SetCounted(prev_); }
++
++namespace {
++
++using Clock = std::chrono::steady_clock;
++
++// ============================================================================
++// Compressed file stream (chunked; LZ4 on macOS, stored elsewhere)
++// ============================================================================
++constexpr char kMagic[8] = {'G', 'E', 'S', 'T', 'A', 'T', 'E', '1'};
++constexpr uint32_t kVersion = 1;
++constexpr size_t kChunk = 4u << 20;
++
++class FileSink : public memory::GeStateSink {
++ public:
++  explicit FileSink(std::ofstream& out) : out_(out) { buf_.reserve(kChunk); }
++  void Write(const void* data, size_t size) override {
++    const auto* p = static_cast<const uint8_t*>(data);
++    while (size) {
++      const size_t n = std::min(size, kChunk - buf_.size());
++      buf_.insert(buf_.end(), p, p + n);
++      p += n;
++      size -= n;
++      if (buf_.size() == kChunk) Flush();
++    }
++  }
++  bool Finish() {
++    Flush();
++    const uint32_t end[2] = {0, 0};
++    out_.write(reinterpret_cast<const char*>(end), sizeof(end));
++    return bool(out_);
++  }
++  uint64_t raw_bytes() const { return raw_; }
++
++ private:
++  void Flush() {
++    if (buf_.empty()) return;
++    uint32_t raw_size = uint32_t(buf_.size()), comp_size = 0;
++#if defined(__APPLE__)
++    comp_.resize(buf_.size() + buf_.size() / 16 + 4096);
++    comp_size = uint32_t(compression_encode_buffer(comp_.data(), comp_.size(), buf_.data(),
++                                                   buf_.size(), nullptr, COMPRESSION_LZ4));
++#endif
++    out_.write(reinterpret_cast<const char*>(&raw_size), 4);
++    out_.write(reinterpret_cast<const char*>(&comp_size), 4);
++    if (comp_size) {
++      out_.write(reinterpret_cast<const char*>(comp_.data()), comp_size);
++    } else {
++      out_.write(reinterpret_cast<const char*>(buf_.data()), raw_size);
++    }
++    raw_ += raw_size;
++    buf_.clear();
++  }
++  std::ofstream& out_;
++  std::vector<uint8_t> buf_;
++  std::vector<uint8_t> comp_;
++  uint64_t raw_ = 0;
++};
++
++class FileSource : public memory::GeStateSource {
++ public:
++  explicit FileSource(std::ifstream& in) : in_(in) {}
++  bool Read(void* data, size_t size) override {
++    auto* p = static_cast<uint8_t*>(data);
++    while (size) {
++      if (pos_ == buf_.size() && !NextChunk()) return false;
++      const size_t n = std::min(size, buf_.size() - pos_);
++      std::memcpy(p, buf_.data() + pos_, n);
++      pos_ += n;
++      p += n;
++      size -= n;
++    }
++    return true;
++  }
++  template <typename T>
++  bool Get(T& v) {
++    return Read(&v, sizeof(T));
++  }
++
++ private:
++  bool NextChunk() {
++    uint32_t raw_size = 0, comp_size = 0;
++    in_.read(reinterpret_cast<char*>(&raw_size), 4);
++    in_.read(reinterpret_cast<char*>(&comp_size), 4);
++    if (!in_ || raw_size == 0 || raw_size > kChunk) return false;
++    buf_.resize(raw_size);
++    pos_ = 0;
++    if (!comp_size) {
++      in_.read(reinterpret_cast<char*>(buf_.data()), raw_size);
++      return bool(in_);
++    }
++#if defined(__APPLE__)
++    comp_.resize(comp_size);
++    in_.read(reinterpret_cast<char*>(comp_.data()), comp_size);
++    if (!in_) return false;
++    return compression_decode_buffer(buf_.data(), raw_size, comp_.data(), comp_size, nullptr,
++                                     COMPRESSION_LZ4) == raw_size;
++#else
++    return false;
++#endif
++  }
++  std::ifstream& in_;
++  std::vector<uint8_t> buf_;
++  std::vector<uint8_t> comp_;
++  size_t pos_ = 0;
++};
++
++template <typename T>
++void Put(memory::GeStateSink& s, const T& v) {
++  s.Write(&v, sizeof(T));
++}
++
++// ============================================================================
++// Thread signatures
++// ============================================================================
++struct ThreadRecord {
++  uint32_t handle = 0;
++  uint32_t thread_id = 0;
++  uint32_t start_address = 0;
++  uint8_t is_current = 0;
++  PPCContext ctx;
++};
++
++constexpr int kChainDepth = 16;
++
++// Guest call chain of the current thread: the saved return addresses walking the
++// PPC back-chain from r1. Together with r1 it identifies "the same place, called
++// the same way", which is what makes the host stack equivalent.
++// True if 4 bytes at guest address `addr` can be read without faulting (checks
++// the real host page protection: the top of a stack is followed by unmapped
++// memory, and the back-chain of the outermost frame can point right at it).
++bool GuestReadable(const uint8_t* base, uint32_t addr) {
++  size_t length = 0;
++  rex::memory::PageAccess access = rex::memory::PageAccess::kNoAccess;
++  if (!rex::memory::QueryProtect(const_cast<uint8_t*>(base + addr), length, access)) {
++    return false;
++  }
++  return (static_cast<int>(access) & static_cast<int>(rex::memory::PageAccess::kReadOnly)) != 0 &&
++         length >= 4;
++}
++
++void CallChain(const uint8_t* base, uint32_t r1, uint32_t out[kChainDepth]) {
++  std::memset(out, 0, sizeof(uint32_t) * kChainDepth);
++  uint32_t frame = r1;
++  for (int i = 0; i < kChainDepth; ++i) {
++    if (frame < 0x10000 || frame >= 0x80000000u || (frame & 3)) break;
++    if (!GuestReadable(base, frame)) break;
++    const uint32_t back = memory::load_and_swap<uint32_t>(base + frame);
++    if (back <= frame || back >= 0x80000000u || (back & 3)) break;
++    if (!GuestReadable(base, back - 8)) break;
++    out[i] = memory::load_and_swap<uint32_t>(base + back - 8);
++    frame = back;
++  }
++}
++
++std::vector<object_ref<XThread>> RunningGuestThreads(KernelState* ks) {
++  std::vector<object_ref<XThread>> result;
++  for (auto& t : ks->object_table()->GetObjectsByType<XThread>()) {
++    if (t && t->is_guest_thread() && t->is_running()) result.push_back(t);
++  }
++  std::sort(result.begin(), result.end(),
++            [](const object_ref<XThread>& a, const object_ref<XThread>& b) {
++              return a->handle() < b->handle();
++            });
++  return result;
++}
++
++// ============================================================================
++// Freeze: park every other guest-code-running thread, pause audio, drain GPU
++// ============================================================================
++class Freeze {
++ public:
++  Freeze(KernelState* ks, bool first_attempt) : ks_(ks), first_attempt_(first_attempt) {}
++  ~Freeze() { End(); }
++
++  // Returns false (and undoes everything) when the game isn't at a quiet moment.
++  bool Begin(std::string* why) {
++    auto* runtime = ks_->emulator();
++    audio_ = runtime ? dynamic_cast<audio::AudioSystem*>(runtime->audio_system()) : nullptr;
++    gpu_ = runtime ? runtime->graphics_system() : nullptr;
++
++    // Only the XMA decoder is paused (its worker writes guest memory on its own
++    // and never runs guest code). The audio worker is NOT paused: pausing it
++    // blocks until its guest callback returns, which can depend on this very
++    // thread. It is held at the gate like any other guest-code runner.
++    xma_ = audio_ ? audio_->xma_decoder() : nullptr;
++    if (xma_ && !xma_->is_paused()) {
++      xma_->Pause();
++      paused_xma_ = true;
++    }
++
++    // 1. Let the GPU drain what has been submitted (guest threads still run, so
++    //    interrupts and render threads can finish the frame in flight).
++    // 2. Close the gate and wait for every other thread to reach a kernel wait.
++    // 3. If the GPU is still idle, the world is quiet: freeze succeeded.
++    // Otherwise reopen the gate and try again until the deadline.
++    const auto deadline = Clock::now() + std::chrono::milliseconds(first_attempt_ ? 120 : 30);
++    for (;;) {
++      while (gpu_ && !gpu_->GeStateIsIdle()) {
++        if (Clock::now() > deadline) {
++          *why = "GPU busy";
++          End();
++          return false;
++        }
++        std::this_thread::sleep_for(std::chrono::microseconds(200));
++      }
++      {
++        std::lock_guard<std::mutex> lock(g_gate_mutex);
++        g_active.store(true, std::memory_order_seq_cst);
++      }
++      active_ = true;
++      const auto park_deadline =
++          std::min(deadline, Clock::now() + std::chrono::milliseconds(40));
++      bool parked = true;
++      while (g_running.load(std::memory_order_seq_cst) > 1) {
++        if (Clock::now() > park_deadline) {
++          parked = false;
++          break;
++        }
++        std::this_thread::sleep_for(std::chrono::microseconds(200));
++      }
++      if (parked && (!gpu_ || gpu_->GeStateIsIdle())) {
++        return true;
++      }
++      const int running = g_running.load() - 1;
++      const std::string names = parked ? std::string() : CountedThreadNames();
++      OpenGate();
++      if (Clock::now() > deadline) {
++        *why = parked ? std::string("GPU busy")
++                      : "threads busy (" + std::to_string(running) + ": " + names + ")";
++        End();
++        return false;
++      }
++    }
++  }
++
++  void End() {
++    OpenGate();
++    if (paused_xma_ && xma_) {
++      xma_->Resume();
++      paused_xma_ = false;
++    }
++  }
++
++  void OpenGate() {
++    if (!active_) return;
++    {
++      std::lock_guard<std::mutex> lock(g_gate_mutex);
++      g_active.store(false, std::memory_order_seq_cst);
++    }
++    g_gate_cv.notify_all();
++    active_ = false;
++  }
++
++  audio::AudioSystem* audio() const { return audio_; }
++  IGraphicsSystem* gpu() const { return gpu_; }
++
++ private:
++  KernelState* ks_;
++  audio::AudioSystem* audio_ = nullptr;
++  IGraphicsSystem* gpu_ = nullptr;
++  audio::XmaDecoder* xma_ = nullptr;
++  bool first_attempt_ = true;
++  bool paused_xma_ = false;
++  bool active_ = false;
++};
++
++enum : uint8_t { kObjEvent = 1, kObjSemaphore = 2, kObjFile = 3 };
++
++// At most one diagnostic line per second while a request keeps retrying.
++bool LogThrottle() {
++  static std::atomic<int64_t> last{0};
++  const int64_t now =
++      std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now().time_since_epoch())
++          .count();
++  int64_t prev = last.load();
++  return now - prev >= 1000 && last.compare_exchange_strong(prev, now);
++}
++
++}  // namespace
++
++// ============================================================================
++// Save
++// ============================================================================
++Result Save(const std::filesystem::path& file, uint32_t site_id, bool first_attempt,
++            std::string* message) {
++  auto* ks = kernel_state();
++  auto* self = XThread::GetCurrentThread();
++  if (!ks || !self || !self->is_guest_thread()) {
++    *message = "not on a game thread";
++    return Result::kFailed;
++  }
++  const auto t0 = Clock::now();
++
++  Freeze freeze(ks, first_attempt);
++  std::string why;
++  if (!freeze.Begin(&why)) {
++    if (LogThrottle()) REXSYS_INFO("GESTATE save waiting: {}", why);
++    *message = why;
++    return Result::kBusy;
++  }
++
++  REXSYS_INFO("GESTATE save: frozen, writing");
++  // Small sections first (threads, objects, GPU, XMA, clock), then memory.
++  std::vector<uint8_t> gpu_blob;
++  if (freeze.gpu() && !freeze.gpu()->GeStateSave(gpu_blob)) {
++    *message = "GPU busy";
++    return Result::kBusy;
++  }
++  std::vector<uint8_t> xma_blob;
++  if (freeze.audio() && freeze.audio()->xma_decoder()) {
++    freeze.audio()->xma_decoder()->GeStateSave(xma_blob);
++  }
++
++  std::error_code ec;
++  std::filesystem::create_directories(file.parent_path(), ec);
++  auto tmp = file;
++  tmp += ".tmp";
++  std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
++  if (!out) {
++    *message = "can't write " + file.string();
++    return Result::kFailed;
++  }
++  out.write(kMagic, sizeof(kMagic));
++  FileSink sink(out);
++  Put(sink, kVersion);
++  Put(sink, site_id);
++
++  uint8_t* base = ks->memory()->virtual_membase();
++  auto threads = RunningGuestThreads(ks);
++  Put(sink, uint32_t(threads.size()));
++  for (auto& t : threads) {
++    ThreadRecord rec;
++    rec.handle = t->handle();
++    rec.thread_id = t->thread_id();
++    rec.start_address = t->creation_params()->start_address;
++    rec.is_current = t.get() == self ? 1 : 0;
++    rec.ctx = *t->thread_state()->context();
++    Put(sink, rec);
++  }
++  uint32_t chain[kChainDepth];
++  CallChain(base, uint32_t(self->thread_state()->context()->r1.u32), chain);
++  sink.Write(chain, sizeof(chain));
++
++  // Kernel objects with host-side state.
++  std::vector<uint8_t> objs;
++  uint32_t obj_count = 0;
++  for (auto& obj : ks->object_table()->GetAllObjects()) {
++    if (!obj) continue;
++    uint8_t type = 0;
++    int64_t value = 0;
++    uint8_t flag = 0;
++    switch (obj->type()) {
++      case XObject::Type::Event: {
++        bool render_pending = false;
++        type = kObjEvent;
++        value = static_cast<XEvent*>(obj.get())->GeGetState(&render_pending) ? 1 : 0;
++        flag = render_pending ? 1 : 0;
++        break;
++      }
++      case XObject::Type::Semaphore:
++        type = kObjSemaphore;
++        value = static_cast<XSemaphore*>(obj.get())->GeGetCount();
++        break;
++      case XObject::Type::File:
++        type = kObjFile;
++        value = int64_t(static_cast<XFile*>(obj.get())->position());
++        break;
++      default:
++        continue;
++    }
++    const uint32_t handle = obj->handle();
++    objs.insert(objs.end(), reinterpret_cast<const uint8_t*>(&handle),
++                reinterpret_cast<const uint8_t*>(&handle) + 4);
++    objs.push_back(type);
++    objs.push_back(flag);
++    objs.insert(objs.end(), reinterpret_cast<const uint8_t*>(&value),
++                reinterpret_cast<const uint8_t*>(&value) + 8);
++    ++obj_count;
++  }
++  Put(sink, obj_count);
++  sink.Write(objs.data(), objs.size());
++
++  Put(sink, uint32_t(gpu_blob.size()));
++  sink.Write(gpu_blob.data(), gpu_blob.size());
++  Put(sink, uint32_t(xma_blob.size()));
++  sink.Write(xma_blob.data(), xma_blob.size());
++  Put(sink, uint64_t(chrono::Clock::QueryGuestTickCount()));
++
++  REXSYS_INFO("GESTATE save: {} threads, {} objects recorded; writing memory", threads.size(),
++              obj_count);
++  bool ok;
++  {
++    auto lock = rex::thread::global_critical_region::AcquireDirect();
++    ok = ks->memory()->GeSaveState(sink);
++  }
++  ok = ok && sink.Finish();
++  out.close();
++  freeze.End();
++
++  if (!ok) {
++    std::filesystem::remove(tmp, ec);
++    *message = "write failed";
++    return Result::kFailed;
++  }
++  std::filesystem::rename(tmp, file, ec);
++  if (ec) {
++    *message = "write failed: " + ec.message();
++    return Result::kFailed;
++  }
++  const auto ms =
++      std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t0).count();
++  const auto size_mb = std::filesystem::file_size(file, ec) / (1024.0 * 1024.0);
++  REXSYS_INFO("GESTATE saved {} ({} threads, {} objects, {:.1f} MB raw -> {:.1f} MB, {} ms)",
++              file.string(), threads.size(), obj_count, sink.raw_bytes() / (1024.0 * 1024.0),
++              size_mb, ms);
++  *message = "saved";
++  return Result::kOk;
++}
++
++// ============================================================================
++// Load
++// ============================================================================
++Result Load(const std::filesystem::path& file, uint32_t site_id, bool first_attempt,
++            std::string* message) {
++  auto* ks = kernel_state();
++  auto* self = XThread::GetCurrentThread();
++  if (!ks || !self || !self->is_guest_thread()) {
++    *message = "not on a game thread";
++    return Result::kFailed;
++  }
++  std::ifstream in(file, std::ios::binary);
++  if (!in) {
++    *message = "no quicksave yet";
++    return Result::kNoState;
++  }
++  char magic[sizeof(kMagic)];
++  in.read(magic, sizeof(magic));
++  if (!in || std::memcmp(magic, kMagic, sizeof(kMagic)) != 0) {
++    *message = "not a save file";
++    return Result::kFailed;
++  }
++  const auto t0 = Clock::now();
++  FileSource src(in);
++  uint32_t version = 0, saved_site = 0, thread_count = 0;
++  if (!src.Get(version) || version != kVersion || !src.Get(saved_site) ||
++      !src.Get(thread_count) || thread_count > 1024) {
++    *message = "save file from a different version";
++    return Result::kFailed;
++  }
++  if (saved_site != site_id) {
++    *message = "different place in the game";
++    return Result::kMismatch;
++  }
++  std::vector<ThreadRecord> saved(thread_count);
++  for (auto& rec : saved) {
++    if (!src.Get(rec)) {
++      *message = "save file damaged";
++      return Result::kFailed;
++    }
++  }
++  uint32_t saved_chain[kChainDepth];
++  uint32_t obj_count = 0;
++  if (!src.Read(saved_chain, sizeof(saved_chain)) || !src.Get(obj_count) || obj_count > 1000000) {
++    *message = "save file damaged";
++    return Result::kFailed;
++  }
++  std::vector<uint8_t> objs(size_t(obj_count) * 14);
++  uint32_t gpu_size = 0, xma_size = 0;
++  std::vector<uint8_t> gpu_blob, xma_blob;
++  uint64_t saved_ticks = 0;
++  bool header_ok = src.Read(objs.data(), objs.size()) && src.Get(gpu_size) && gpu_size < (1u << 20);
++  if (header_ok) {
++    gpu_blob.resize(gpu_size);
++    header_ok = src.Read(gpu_blob.data(), gpu_size) && src.Get(xma_size) && xma_size < (1u << 24);
++  }
++  if (header_ok) {
++    xma_blob.resize(xma_size);
++    header_ok = src.Read(xma_blob.data(), xma_size) && src.Get(saved_ticks);
++  }
++  if (!header_ok) {
++    *message = "save file damaged";
++    return Result::kFailed;
++  }
++
++  // The calling thread must be the saved one, reached the same way.
++  uint8_t* base = ks->memory()->virtual_membase();
++  const ThreadRecord* saved_self = nullptr;
++  for (auto& rec : saved) {
++    if (rec.is_current) saved_self = &rec;
++  }
++  PPCContext* self_ctx = self->thread_state()->context();
++  uint32_t chain[kChainDepth];
++  CallChain(base, self_ctx->r1.u32, chain);
++  if (!saved_self || saved_self->handle != self->handle() ||
++      saved_self->ctx.r1.u32 != self_ctx->r1.u32 ||
++      std::memcmp(chain, saved_chain, sizeof(chain)) != 0) {
++    if (LogThrottle()) {
++      REXSYS_INFO("GESTATE load waiting: caller r1={:08X} chain[0..2]={:08X} {:08X} {:08X}, saved "
++                  "r1={:08X} chain[0..2]={:08X} {:08X} {:08X}",
++                  self_ctx->r1.u32, chain[0], chain[1], chain[2],
++                  saved_self ? saved_self->ctx.r1.u32 : 0, saved_chain[0], saved_chain[1],
++                  saved_chain[2]);
++    }
++    *message = "different place in the game";
++    return Result::kMismatch;
++  }
++
++  // Cheap pre-check before freezing anything: are the other threads already
++  // sitting where they were saved? (Re-checked properly once frozen.)
++  {
++    auto now_threads = RunningGuestThreads(ks);
++    bool plausible = now_threads.size() == saved.size();
++    for (size_t i = 0; plausible && i < now_threads.size(); ++i) {
++      const PPCContext* c = now_threads[i]->thread_state()->context();
++      plausible = saved[i].handle == now_threads[i]->handle() &&
++                  (saved[i].is_current ||
++                   (saved[i].ctx.r1.u32 == c->r1.u32 && saved[i].ctx.lr == c->lr));
++    }
++    if (!plausible) {
++      if (LogThrottle()) {
++        REXSYS_INFO("GESTATE load waiting: {} running threads now, {} saved",
++                    now_threads.size(), saved.size());
++        for (size_t i = 0; i < std::max(now_threads.size(), saved.size()); ++i) {
++          const uint32_t nh = i < now_threads.size() ? now_threads[i]->handle() : 0;
++          const PPCContext* c = i < now_threads.size() ? now_threads[i]->thread_state()->context()
++                                                       : nullptr;
++          REXSYS_INFO("GESTATE   #{} now {:08X} r1={:08X} lr={:08X} | saved {:08X} r1={:08X} "
++                      "lr={:08X}{}",
++                      i, nh, c ? c->r1.u32 : 0, c ? uint32_t(c->lr) : 0,
++                      i < saved.size() ? saved[i].handle : 0,
++                      i < saved.size() ? saved[i].ctx.r1.u32 : 0,
++                      i < saved.size() ? uint32_t(saved[i].ctx.lr) : 0,
++                      i < saved.size() && saved[i].is_current ? " (this thread)" : "");
++        }
++      }
++      *message = "game threads not in the saved position";
++      return Result::kMismatch;
++    }
++  }
++
++  Freeze freeze(ks, first_attempt);
++  std::string why;
++  if (!freeze.Begin(&why)) {
++    if (LogThrottle()) REXSYS_INFO("GESTATE load waiting: {}", why);
++    *message = why;
++    return Result::kBusy;
++  }
++
++  // Every other running guest thread must be parked exactly where it was.
++  auto threads = RunningGuestThreads(ks);
++  if (threads.size() != saved.size()) {
++    REXSYS_INFO("GESTATE load refused: {} running threads now, {} saved", threads.size(),
++                saved.size());
++    *message = "game state changed too much (threads)";
++    return Result::kMismatch;
++  }
++  for (size_t i = 0; i < threads.size(); ++i) {
++    const auto& t = threads[i];
++    const ThreadRecord& rec = saved[i];
++    const PPCContext* ctx = t->thread_state()->context();
++    const bool same = rec.handle == t->handle() &&
++                      rec.start_address == t->creation_params()->start_address &&
++                      (rec.is_current || (rec.ctx.r1.u32 == ctx->r1.u32 && rec.ctx.lr == ctx->lr));
++    if (!same) {
++      REXSYS_INFO(
++          "GESTATE load refused: thread {:08X} (start {:08X}) saved at r1={:08X} lr={:08X}, now "
++          "r1={:08X} lr={:08X}",
++          rec.handle, rec.start_address, rec.ctx.r1.u32, uint32_t(rec.ctx.lr), ctx->r1.u32,
++          uint32_t(ctx->lr));
++      *message = "game threads not in the saved position";
++      return Result::kMismatch;
++    }
++  }
++  // Every saved kernel object must still exist with the same type.
++  for (uint32_t i = 0; i < obj_count; ++i) {
++    uint32_t handle;
++    std::memcpy(&handle, &objs[i * 14], 4);
++    const uint8_t type = objs[i * 14 + 4];
++    auto obj = ks->object_table()->LookupObject<XObject>(handle);
++    const bool ok = obj && ((type == kObjEvent && obj->type() == XObject::Type::Event) ||
++                            (type == kObjSemaphore && obj->type() == XObject::Type::Semaphore) ||
++                            (type == kObjFile && obj->type() == XObject::Type::File));
++    if (!ok) {
++      REXSYS_INFO("GESTATE load refused: kernel object {:08X} (type {}) no longer exists", handle,
++                  type);
++      *message = "game state changed too much (objects)";
++      return Result::kMismatch;
++    }
++  }
++
++  // ---- Point of no return: rewrite the world. ----
++  REXSYS_INFO("GESTATE load: frozen and matched; restoring memory");
++  if (!ks->memory()->GeRestoreState(src)) {
++    REXSYS_ERROR("GESTATE: memory restore failed part-way; the game may crash");
++    *message = "load failed (memory)";
++    return Result::kFailed;
++  }
++  REXSYS_INFO("GESTATE load: memory restored; threads, objects, audio, GPU");
++  for (size_t i = 0; i < threads.size(); ++i) {
++    *threads[i]->thread_state()->context() = saved[i].ctx;
++  }
++  for (uint32_t i = 0; i < obj_count; ++i) {
++    uint32_t handle;
++    int64_t value;
++    std::memcpy(&handle, &objs[i * 14], 4);
++    const uint8_t type = objs[i * 14 + 4], flag = objs[i * 14 + 5];
++    std::memcpy(&value, &objs[i * 14 + 6], 8);
++    auto obj = ks->object_table()->LookupObject<XObject>(handle);
++    if (!obj) continue;
++    if (type == kObjEvent) {
++      static_cast<XEvent*>(obj.get())->GeSetState(value != 0, flag != 0);
++    } else if (type == kObjSemaphore) {
++      static_cast<XSemaphore*>(obj.get())->GeSetCount(int32_t(value));
++    } else if (type == kObjFile) {
++      static_cast<XFile*>(obj.get())->set_position(uint64_t(value));
++    }
++  }
++  if (freeze.audio() && freeze.audio()->xma_decoder() && !xma_blob.empty()) {
++    freeze.audio()->xma_decoder()->GeStateRestore(xma_blob.data(), xma_blob.size());
++  }
++  if (freeze.gpu() && !gpu_blob.empty() &&
++      !freeze.gpu()->GeStateRestore(gpu_blob.data(), gpu_blob.size())) {
++    REXSYS_ERROR("GESTATE: GPU state restore failed");
++  }
++  chrono::Clock::GeSetGuestTickCount(saved_ticks);
++  freeze.End();
++
++  const auto ms =
++      std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t0).count();
++  REXSYS_INFO("GESTATE loaded {} ({} threads, {} objects, {} ms)", file.string(), threads.size(),
++              obj_count, ms);
++  *message = "loaded";
++  return Result::kOk;
++}
++
++}  // namespace rex::system::ge_state
 diff --git a/src/system/kernel_state.cpp b/src/system/kernel_state.cpp
 index 697399c..a4fe5a3 100644
 --- a/src/system/kernel_state.cpp
@@ -3380,10 +4723,10 @@ index a77f5e6..166b286 100644
    // https://cs.rin.ru/forum/viewtopic.php?f=38&t=60668&hilit=gfwl+live&start=195
    // https://github.com/arkem/py360/blob/master/py360/constants.py
 diff --git a/src/system/xevent.cpp b/src/system/xevent.cpp
-index c24fbd1..d8d2395 100644
+index c24fbd1..9cd3946 100644
 --- a/src/system/xevent.cpp
 +++ b/src/system/xevent.cpp
-@@ -73,25 +73,63 @@ void XEvent::Query(uint32_t* out_type, uint32_t* out_state) {
+@@ -73,25 +73,82 @@ void XEvent::Query(uint32_t* out_type, uint32_t* out_state) {
    }
  }
  
@@ -3434,6 +4777,25 @@ index c24fbd1..d8d2395 100644
    return 1;
  }
  
++bool XEvent::GeGetState(bool* render_pending) {
++  *render_pending = render_pending_.load(std::memory_order_relaxed);
++  const bool signaled = rex::thread::Wait(event_.get(), false, std::chrono::milliseconds(0)) ==
++                        rex::thread::WaitResult::kSuccess;
++  if (signaled) {
++    event_->Set();  // the probe consumed an auto-reset signal; put it back
++  }
++  return signaled;
++}
++
++void XEvent::GeSetState(bool signaled, bool render_pending) {
++  render_pending_.store(render_pending, std::memory_order_relaxed);
++  if (signaled) {
++    event_->Set();
++  } else {
++    event_->Reset();
++  }
++}
++
  void XEvent::Clear() {
 +  SetGuestSignalState(0);
    event_->Reset();
@@ -3447,6 +4809,301 @@ index c24fbd1..d8d2395 100644
  bool XEvent::Save(stream::ByteStream* stream) {
    REXSYS_DEBUG("XEvent {:08X} ({})", handle(), manual_reset_ ? "manual" : "auto");
    SaveObject(stream);
+diff --git a/src/system/xmemory.cpp b/src/system/xmemory.cpp
+index 76cc877..607ede4 100644
+--- a/src/system/xmemory.cpp
++++ b/src/system/xmemory.cpp
+@@ -780,6 +780,42 @@ bool Memory::Restore(stream::ByteStream* stream) {
+   return true;
+ }
+ 
++// GoldenEye save states ------------------------------------------------------
++
++bool Memory::GeSaveState(GeStateSink& sink) {
++  BaseHeap* content_heaps[] = {&heaps_.v00000000, &heaps_.v40000000, &heaps_.v80000000,
++                               &heaps_.v90000000, &heaps_.physical};
++  BaseHeap* table_heaps[] = {&heaps_.vA0000000, &heaps_.vC0000000, &heaps_.vE0000000};
++  for (BaseHeap* heap : content_heaps) {
++    if (!heap->GeSave(sink, true)) return false;
++  }
++  for (BaseHeap* heap : table_heaps) {
++    if (!heap->GeSave(sink, false)) return false;
++  }
++  return true;
++}
++
++bool Memory::GeRestoreState(GeStateSource& source) {
++  // Drop every GPU write-watch first: the restore below rewrites memory behind
++  // the watches' backs, so they must not stay armed on stale data (and the
++  // watch flags must not survive with their host protection removed).
++  for (uint32_t base : {0xA0000000u, 0xC0000000u, 0xE0000000u}) {
++    TriggerPhysicalMemoryCallbacks(rex::thread::global_critical_region::AcquireDirect(), base,
++                                   0x20000000u, true, true);
++  }
++  auto global_lock = rex::thread::global_critical_region::AcquireDirect();
++  BaseHeap* content_heaps[] = {&heaps_.v00000000, &heaps_.v40000000, &heaps_.v80000000,
++                               &heaps_.v90000000, &heaps_.physical};
++  BaseHeap* table_heaps[] = {&heaps_.vA0000000, &heaps_.vC0000000, &heaps_.vE0000000};
++  for (BaseHeap* heap : content_heaps) {
++    if (!heap->GeRestore(source, true)) return false;
++  }
++  for (BaseHeap* heap : table_heaps) {
++    if (!heap->GeRestore(source, false)) return false;
++  }
++  return true;
++}
++
+ //=============================================================================
+ // Recompiled Code Function Table
+ //=============================================================================
+@@ -1240,6 +1276,145 @@ bool BaseHeap::Restore(stream::ByteStream* stream) {
+   return true;
+ }
+ 
++namespace {
++constexpr uint8_t kGePageZero = 0;
++constexpr uint8_t kGePageData = 1;
++constexpr uint8_t kGePageSkip = 2;
++}  // namespace
++
++bool BaseHeap::GeSave(GeStateSink& sink, bool contents) {
++  const uint32_t count = uint32_t(page_table_.size());
++  sink.Write(&heap_base_, sizeof(heap_base_));
++  sink.Write(&count, sizeof(count));
++  sink.Write(page_table_.data(), sizeof(PageEntry) * page_table_.size());
++  if (!contents) {
++    return true;
++  }
++  static const std::vector<uint8_t> zeros(64 * 1024, 0);
++  // Host-protection cache: never touch a page the host would fault on, even if
++  // the guest page table says it is readable (a fault here would loop forever
++  // in the guest access-violation handler).
++  const uint8_t* region_start = nullptr;
++  const uint8_t* region_end = nullptr;
++  bool region_readable = false;
++  auto host_readable = [&](const uint8_t* p, size_t n) -> bool {
++    const uint8_t* end = p + n;
++    while (p < end) {
++      if (!(p >= region_start && p < region_end)) {
++        size_t length = 0;
++        rex::memory::PageAccess access = rex::memory::PageAccess::kNoAccess;
++        if (!rex::memory::QueryProtect(const_cast<uint8_t*>(p), length, access) || !length) {
++          return false;
++        }
++        region_start = p;
++        region_end = p + length;
++        region_readable = (static_cast<int>(access) &
++                           static_cast<int>(rex::memory::PageAccess::kReadOnly)) != 0;
++      }
++      if (!region_readable) return false;
++      p = region_end;
++    }
++    return true;
++  };
++  for (uint32_t i = 0; i < count; ++i) {
++    const PageEntry& page = page_table_[i];
++    if (!page.state || !(page.state & memory::kMemoryAllocationCommit)) {
++      continue;
++    }
++    const uint8_t* addr = TranslateRelative<const uint8_t*>(i << page_size_shift_);
++    if (!(page.current_protect & memory::kMemoryProtectRead) || !host_readable(addr, page_size_)) {
++      sink.Write(&kGePageSkip, 1);
++      continue;
++    }
++    bool zero = true;
++    for (uint32_t off = 0; off < page_size_ && zero; off += uint32_t(zeros.size())) {
++      const size_t n = std::min<size_t>(zeros.size(), page_size_ - off);
++      zero = std::memcmp(addr + off, zeros.data(), n) == 0;
++    }
++    if (zero) {
++      sink.Write(&kGePageZero, 1);
++    } else {
++      sink.Write(&kGePageData, 1);
++      sink.Write(addr, page_size_);
++    }
++  }
++  return true;
++}
++
++bool BaseHeap::GeRestore(GeStateSource& source, bool contents) {
++  uint32_t base = 0, count = 0;
++  if (!source.Read(&base, sizeof(base)) || !source.Read(&count, sizeof(count))) {
++    return false;
++  }
++  if (base != heap_base_ || count != page_table_.size()) {
++    REXSYS_ERROR("GESTATE heap {:08X} layout mismatch (saved {:08X}/{} pages)", heap_base_, base,
++                 count);
++    return false;
++  }
++  if (!source.Read(page_table_.data(), sizeof(PageEntry) * page_table_.size())) {
++    return false;
++  }
++
++  const uint32_t host_page_size = memory_->system_page_size_;
++  const bool reconcile_host_pages = page_size_ < host_page_size;
++  uint32_t writable_host_page = UINT32_MAX;
++  auto global_lock = AcquireHostPageReconcileLock();
++
++  for (uint32_t i = 0; i < count; ++i) {
++    const PageEntry& page = page_table_[i];
++    if (!page.state || !(page.state & memory::kMemoryAllocationCommit)) {
++      continue;
++    }
++    uint8_t flag = kGePageSkip;
++    if (contents && !source.Read(&flag, 1)) {
++      return false;
++    }
++    memory::PageAccess page_access = memory::PageAccess::kNoAccess;
++    if ((page.current_protect & memory::kMemoryProtectRead) &&
++        (page.current_protect & memory::kMemoryProtectWrite)) {
++      page_access = memory::PageAccess::kReadWrite;
++    } else if (page.current_protect & memory::kMemoryProtectRead) {
++      page_access = memory::PageAccess::kReadOnly;
++    }
++    uint8_t* addr = TranslateRelative<uint8_t*>(i << page_size_shift_);
++    if (!reconcile_host_pages) {
++      rex::memory::AllocFixed(addr, page_size_, memory::AllocationType::kCommit,
++                              memory::PageAccess::kReadWrite);
++      rex::memory::Protect(addr, page_size_, memory::PageAccess::kReadWrite, nullptr);
++    } else {
++      const uint32_t host_page =
++          uint32_t(((uint64_t(i) << page_size_shift_) + host_address_offset_) / host_page_size);
++      if (host_page != writable_host_page) {
++        uint8_t* host_page_pointer = membase_ + heap_base_ + size_t(host_page) * host_page_size;
++        if (!rex::memory::AllocFixed(host_page_pointer, host_page_size,
++                                     memory::AllocationType::kCommit,
++                                     memory::PageAccess::kReadWrite)) {
++          REXSYS_ERROR("GESTATE: failed to make host page {} writable", host_page);
++          return false;
++        }
++        writable_host_page = host_page;
++      }
++    }
++    if (flag == kGePageData) {
++      if (!source.Read(addr, page_size_)) {
++        return false;
++      }
++    } else if (flag == kGePageZero) {
++      std::memset(addr, 0, page_size_);
++    }
++    if (!reconcile_host_pages) {
++      rex::memory::Protect(addr, page_size_, page_access, nullptr);
++    }
++  }
++
++  if (reconcile_host_pages && !page_table_.empty()) {
++    if (!SyncHostPageAccess(0, uint32_t(page_table_.size()) - 1)) {
++      return false;
++    }
++  }
++  return true;
++}
++
+ void BaseHeap::Reset() {
+   // TODO(DrChat): protect pages.
+   std::memset(page_table_.data(), 0, sizeof(PageEntry) * page_table_.size());
+diff --git a/src/system/xobject.cpp b/src/system/xobject.cpp
+index d358f39..3c94a01 100644
+--- a/src/system/xobject.cpp
++++ b/src/system/xobject.cpp
+@@ -13,6 +13,7 @@
+ 
+ #include <rex/chrono/clock.h>
+ #include <rex/stream.h>
++#include <rex/system/ge_savestate.h>
+ #include <rex/system/kernel_state.h>
+ #include <rex/system/util/string_utils.h>  // For TranslateAnsiStringAddress
+ #include <rex/system/xobject.h>
+@@ -213,7 +214,11 @@ X_STATUS XObject::Wait(uint32_t wait_reason, uint32_t processor_mode, uint32_t a
+                                 : std::chrono::milliseconds::max();
+ 
+   XThread::CheckTitleTermination();
+-  auto result = rex::thread::Wait(wait_handle, alertable ? true : false, timeout_ms);
++  rex::thread::WaitResult result;
++  {
++    ge_state::BlockScope ge_block;  // parked: safe for a save state
++    result = rex::thread::Wait(wait_handle, alertable ? true : false, timeout_ms);
++  }
+   XThread::CheckTitleTermination();
+   switch (result) {
+     case rex::thread::WaitResult::kSuccess:
+@@ -239,9 +244,13 @@ X_STATUS XObject::SignalAndWait(XObject* signal_object, XObject* wait_object, ui
+                                       TimeoutTicksToMs(*opt_timeout)))
+                                 : std::chrono::milliseconds::max();
+ 
+-  auto result =
+-      rex::thread::SignalAndWait(signal_object->GetWaitHandle(), wait_object->GetWaitHandle(),
+-                                 alertable ? true : false, timeout_ms);
++  rex::thread::WaitResult result;
++  {
++    ge_state::BlockScope ge_block;  // parked: safe for a save state
++    result =
++        rex::thread::SignalAndWait(signal_object->GetWaitHandle(), wait_object->GetWaitHandle(),
++                                   alertable ? true : false, timeout_ms);
++  }
+   switch (result) {
+     case rex::thread::WaitResult::kSuccess:
+       wait_object->WaitCallback();
+@@ -274,8 +283,11 @@ X_STATUS XObject::WaitMultiple(uint32_t count, XObject** objects, uint32_t wait_
+ 
+   XThread::CheckTitleTermination();
+   if (wait_type) {
+-    auto result =
+-        rex::thread::WaitAny(std::move(wait_handles), alertable ? true : false, timeout_ms);
++    std::pair<rex::thread::WaitResult, size_t> result;
++    {
++      ge_state::BlockScope ge_block;  // parked: safe for a save state
++      result = rex::thread::WaitAny(std::move(wait_handles), alertable ? true : false, timeout_ms);
++    }
+     XThread::CheckTitleTermination();
+     switch (result.first) {
+       case rex::thread::WaitResult::kSuccess:
+@@ -295,8 +307,11 @@ X_STATUS XObject::WaitMultiple(uint32_t count, XObject** objects, uint32_t wait_
+         return X_STATUS_UNSUCCESSFUL;
+     }
+   } else {
+-    auto result =
+-        rex::thread::WaitAll(std::move(wait_handles), alertable ? true : false, timeout_ms);
++    rex::thread::WaitResult result;
++    {
++      ge_state::BlockScope ge_block;  // parked: safe for a save state
++      result = rex::thread::WaitAll(std::move(wait_handles), alertable ? true : false, timeout_ms);
++    }
+     XThread::CheckTitleTermination();
+     switch (result) {
+       case rex::thread::WaitResult::kSuccess:
+diff --git a/src/system/xsemaphore.cpp b/src/system/xsemaphore.cpp
+index db830e4..5314fe5 100644
+--- a/src/system/xsemaphore.cpp
++++ b/src/system/xsemaphore.cpp
+@@ -47,6 +47,27 @@ bool XSemaphore::ReleaseSemaphore(int32_t release_count, int32_t* out_previous_c
+   return success;
+ }
+ 
++int32_t XSemaphore::GeGetCount() {
++  int32_t count = 0;
++  while (rex::thread::Wait(semaphore_.get(), false, std::chrono::milliseconds(0)) ==
++         rex::thread::WaitResult::kSuccess) {
++    ++count;
++  }
++  if (count > 0) {
++    semaphore_->Release(count, nullptr);
++  }
++  return count;
++}
++
++void XSemaphore::GeSetCount(int32_t count) {
++  while (rex::thread::Wait(semaphore_.get(), false, std::chrono::milliseconds(0)) ==
++         rex::thread::WaitResult::kSuccess) {
++  }
++  if (count > 0) {
++    semaphore_->Release(count, nullptr);
++  }
++}
++
+ bool XSemaphore::Save(stream::ByteStream* stream) {
+   if (!SaveObject(stream)) {
+     return false;
 diff --git a/src/system/xsocket.cpp b/src/system/xsocket.cpp
 index 0b96626..b0d2fce 100644
 --- a/src/system/xsocket.cpp
@@ -3494,6 +5151,55 @@ index 0b96626..b0d2fce 100644
  
    sockaddr_in nfrom;
    socklen_t nfromlen = sizeof(sockaddr_in);
+diff --git a/src/system/xthread.cpp b/src/system/xthread.cpp
+index 77bce25..04d9040 100644
+--- a/src/system/xthread.cpp
++++ b/src/system/xthread.cpp
+@@ -26,6 +26,7 @@
+ #include <rex/platform/exceptions.h>
+ #include <rex/runtime.h>
+ #include <rex/stream.h>
++#include <rex/system/ge_savestate.h>
+ #include <rex/system/kernel_state.h>
+ #include <rex/system/function_dispatcher.h>
+ #include <rex/system/thread_state.h>
+@@ -569,6 +570,7 @@ X_STATUS XThread::Terminate(int exit_code) {
+ }
+ 
+ void XThread::Execute() {
++  ge_state::ExecScope ge_exec_scope;  // save-state gate (thread start touches guest memory)
+   REXSYS_NOISY_DEBUG("Execute thid {} (handle={:08X}, '{}', native={:08X})", thread_id_, handle(),
+                      thread_name_, thread_->system_id());
+ 
+@@ -718,6 +720,7 @@ void XThread::EnqueueApc(uint32_t normal_routine, uint32_t normal_context, uint3
+ }
+ 
+ void XThread::DeliverAPCs() {
++  ge_state::ExecScope ge_exec_scope;  // save-state gate (APC delivery edits guest memory)
+   auto mem = memory();
+   auto* ctx = thread_state_->context();
+   auto kthread = guest_object<X_KTHREAD>();
+@@ -1014,7 +1017,11 @@ X_STATUS XThread::Delay(uint32_t processor_mode, uint32_t alertable, uint64_t in
+   timeout_ms = chrono::Clock::ScaleGuestDurationMillis(timeout_ms);
+   CheckTitleTermination();
+   if (alertable) {
+-    auto result = rex::thread::AlertableSleep(std::chrono::milliseconds(timeout_ms));
++    rex::thread::SleepResult result;
++    {
++      ge_state::BlockScope ge_block;  // parked: safe for a save state
++      result = rex::thread::AlertableSleep(std::chrono::milliseconds(timeout_ms));
++    }
+     CheckTitleTermination();
+     switch (result) {
+       default:
+@@ -1031,6 +1038,7 @@ X_STATUS XThread::Delay(uint32_t processor_mode, uint32_t alertable, uint64_t in
+         rex::thread::MaybeYield();
+       }
+     } else {
++      ge_state::BlockScope ge_block;  // parked: safe for a save state
+       rex::thread::Sleep(std::chrono::milliseconds(timeout_ms));
+     }
+     CheckTitleTermination();
 diff --git a/src/ui/presenter.cpp b/src/ui/presenter.cpp
 index 7360ed9..f32b767 100644
 --- a/src/ui/presenter.cpp

@@ -49,6 +49,16 @@ Press **L3** (click the left stick) to sprint while moving forward. By default i
 
 This is part of the source (`src/ge_hooks.cpp` + `ge_config.toml`), so every build, on any platform, gets it. It works by raising the game's own forward-speed multiplier while sprint is on, so movement still goes through the game's normal collision.
 
+## Quicksave (mod)
+
+Touchpad left half / F5 saves, right half / F9 loads (one slot, `quicksave.gestate` in Application Support). How it works, since a recompiled game can't simply be frozen like an emulator:
+
+* Part of a recompiled game's state is the host call stack of each thread, which can't be copied. So snapshots are only taken, and only restored, at a safe point: the game thread at its per-frame input poll (`ge_inject_keyboard`), with every other guest thread parked inside a kernel wait.
+* The SDK (`src/system/ge_savestate.cpp`) counts threads running guest code: every host-to-guest entry and every blocking kernel wait reports in, and while a snapshot runs, a gate holds anything trying to re-enter guest code.
+* A snapshot holds all guest memory (page tables and contents, zero pages skipped, LZ4-compressed on macOS), every running guest thread's registers, kernel event/semaphore state and file positions, the GPU ring position, XMA decoder bookkeeping, and guest time.
+* A load is only applied if every thread is parked exactly where it was saved (same stack pointer and return address) and the game thread got to the poll through the same call chain; otherwise it retries for a few seconds and gives up with a message. After a restore, GPU caches of guest memory are dropped, XMA decoders restart, and guest time is set back to the saved moment.
+* The PS4/PS5 touchpad click is taken in the SDK's SDL input driver (it was mapped to Guide before and ignored); which half was pressed comes from the finger position.
+
 ## What changed for macOS
 
 

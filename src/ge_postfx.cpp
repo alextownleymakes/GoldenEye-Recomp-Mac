@@ -33,6 +33,9 @@ REXCVAR_DEFINE_DOUBLE(postfx_temperature, 0.0, "PostFX", "Temperature, warm/cool
     .range(-1.0, 1.0);
 REXCVAR_DEFINE_DOUBLE(postfx_gamma, 1.0, "PostFX", "Gamma (1=none)").range(0.3, 3.0);
 
+// Defined in ge_hooks.cpp: the current quicksave/quickload message, if any.
+bool ge_toast_current(std::string* text, float* alpha);
+
 namespace ge {
 
 namespace {
@@ -97,6 +100,22 @@ PostFxOverlay::PostFxOverlay(rex::ui::ImGuiDrawer* drawer) : rex::ui::ImGuiDialo
 PostFxOverlay::~PostFxOverlay() = default;
 
 void PostFxOverlay::OnDraw(ImGuiIO& io) {
+  // Quicksave / quickload message (top centre), independent of post-FX.
+  {
+    std::string text;
+    float alpha = 0.0f;
+    if (::ge_toast_current(&text, &alpha) && io.DisplaySize.x > 0.0f) {
+      ImDrawList* fg = ImGui::GetForegroundDrawList();
+      const ImVec2 ts = ImGui::CalcTextSize(text.c_str());
+      const float pad = 12.0f;
+      const ImVec2 p0((io.DisplaySize.x - ts.x) * 0.5f - pad, 24.0f);
+      const ImVec2 p1(p0.x + ts.x + pad * 2.0f, p0.y + ts.y + pad * 1.4f);
+      fg->AddRectFilled(p0, p1, IM_COL32(10, 12, 16, int(200 * alpha)), 6.0f);
+      fg->AddText(ImVec2(p0.x + pad, p0.y + pad * 0.7f), IM_COL32(235, 225, 190, int(255 * alpha)),
+                  text.c_str());
+    }
+  }
+
   if (!REXCVAR_GET(postfx_enabled)) return;
 
   const float W = io.DisplaySize.x, H = io.DisplaySize.y;

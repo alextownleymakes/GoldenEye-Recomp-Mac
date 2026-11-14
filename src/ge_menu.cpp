@@ -685,6 +685,22 @@ void GeMenuDialog::DrawContent(ImGuiIO& /*io*/) {
       ImGui::Spacing();
       ImGui::Separator();
       ImGui::Spacing();
+      ImGui::TextColored(ImColor(kTitle), "QUICKSAVE");
+      ImGui::Spacing();
+      {
+        bool qs = GetCvarB("ge_quickstate_enable");
+        if (ImGui::Checkbox("Quicksave / quickload", &qs)) {
+          SetCvarB("ge_quickstate_enable", qs);
+          if (callbacks_.persist_config) callbacks_.persist_config();
+        }
+        ImGui::TextColored(ImColor(kInkDim),
+                           "(PS4/PS5 touchpad: click left half = save, right half = load; "
+                           "keyboard F5 / F9)");
+      }
+
+      ImGui::Spacing();
+      ImGui::Separator();
+      ImGui::Spacing();
       ImGui::TextColored(ImColor(kTitle), "DEBUG");
       ImGui::Spacing();
       // Hidden debug menu (TCRF). Live: the enable gate reads this cvar each

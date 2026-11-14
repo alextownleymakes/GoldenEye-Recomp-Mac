@@ -25,6 +25,10 @@
 #include <rex/system/xthread.h>
 #include <rex/system/kernel_state.h>
 #include <rex/input/input_system.h>  // HasPhysicalGamepad (mouse-look off with a pad)
+#include <rex/system/ge_savestate.h>  // quicksave / quickload
+#include <chrono>
+#include <filesystem>
+#include <mutex>
 #include <array>
 #include <cstdlib>
 #include <cstdio>
@@ -201,6 +205,17 @@ void ge_watchdog_thread() {
   bool recover_fired = false;
   for (;;) {
     std::this_thread::sleep_for(std::chrono::milliseconds(250));
+    // A quicksave/quickload freezes the game on purpose: not a stall, and the
+    // recovery below must not touch guest memory mid-snapshot.
+    static int quiet_ticks = 0;
+    if (rex::system::ge_state::InProgress()) quiet_ticks = 8;  // and ~2 s after
+    if (quiet_ticks > 0) {
+      --quiet_ticks;
+      stall = 0;
+      logged = false;
+      last_wpi = 0xFFFFFFFFu;
+      continue;
+    }
     auto* cp = ge_cp();
     if (!cp) continue;
     uint32_t wpi = static_cast<CPProbe*>(cp)->wpi();
@@ -1486,8 +1501,121 @@ REXCVAR_DEFINE_STRING(ge_key_look_right, "", "Input/Keybinds", "Look right (righ
 void ge_mouse_camera(uint8_t* base);  // defined above
 void ge_apply_ce_data_patches(uint8_t* base);  // ge_ce_patches.cpp
 
+// ---------------------------------------------------------------------------
+// Quicksave / quickload (mod): "freeze / thaw" like an emulator's save states.
+// PS4/PS5 touchpad: click the LEFT half to save, the RIGHT half to load.
+// Keyboard: F5 = save, F9 = load. One slot, kept on disk.
+//
+// A recompiled game can only be frozen at a safe point (see ge_savestate.h), so
+// requests are carried out here, at the per-frame input poll on the game thread.
+// If the other game threads aren't parked yet, it retries over the next frames.
+// ---------------------------------------------------------------------------
+REXCVAR_DEFINE_BOOL(ge_quickstate_enable, true, "Input",
+                    "Quicksave/quickload: touchpad left/right half (PS4/PS5), F5/F9");
+
+namespace {
+constexpr uint32_t kGeStateSite = 0x823B25E4;  // this hook's address
+constexpr int kGeStateMaxAttempts = 120;        // ~2-4 s of frames before giving up
+
+std::mutex g_toast_mutex;
+std::string g_toast_text;
+std::chrono::steady_clock::time_point g_toast_until;
+
+void ge_toast(const std::string& text, double seconds = 2.5) {
+  std::lock_guard<std::mutex> lock(g_toast_mutex);
+  g_toast_text = text;
+  g_toast_until = std::chrono::steady_clock::now() +
+                  std::chrono::milliseconds(static_cast<int>(seconds * 1000.0));
+}
+
+std::filesystem::path ge_quicksave_path() {
+#if defined(__APPLE__)
+  if (const char* home = std::getenv("HOME")) {
+    return std::filesystem::path(home) / "Library" / "Application Support" / "GoldenEye" /
+           "quicksave.gestate";
+  }
+#endif
+  return rex::filesystem::GetExecutableFolder() / "quicksave.gestate";
+}
+
+void ge_quickstate_poll() {
+  enum class Op { kNone, kSave, kLoad };
+  static Op pending = Op::kNone;
+  static int attempts = 0;
+  static bool f5_prev = false, f9_prev = false;
+
+  uint32_t pad_left = 0, pad_right = 0;
+  rex::input::InputSystem::GeTakeTouchpadClicks(&pad_left, &pad_right);
+  const bool keys = ge_input_active();
+  const bool f5 = keys && ge_vk_is_down(0x74);  // VK_F5
+  const bool f9 = keys && ge_vk_is_down(0x78);  // VK_F9
+  const bool want_save = pad_left || (f5 && !f5_prev);
+  const bool want_load = pad_right || (f9 && !f9_prev);
+  f5_prev = f5;
+  f9_prev = f9;
+  if (want_save || want_load) {
+    if (!REXCVAR_GET(ge_quickstate_enable)) return;
+    if (rex::cvar::GetFlagByName("ge_online_enable") == "true") {
+      ge_toast("Quicksave is off during online play");
+      return;
+    }
+    pending = want_load ? Op::kLoad : Op::kSave;
+    attempts = 0;
+  }
+  if (pending == Op::kNone) return;
+
+  using rex::system::ge_state::Result;
+  const bool saving = pending == Op::kSave;
+  std::string message;
+  const bool first = attempts == 0;
+  const Result result =
+      saving ? rex::system::ge_state::Save(ge_quicksave_path(), kGeStateSite, first, &message)
+             : rex::system::ge_state::Load(ge_quicksave_path(), kGeStateSite, first, &message);
+  switch (result) {
+    case Result::kOk:
+      ge_toast(saving ? "Quicksaved" : "Quickloaded");
+      pending = Op::kNone;
+      break;
+    case Result::kNoState:
+      ge_toast("No quicksave yet (touchpad left / F5 to save)");
+      pending = Op::kNone;
+      break;
+    case Result::kBusy:
+    case Result::kMismatch:
+      // Not a quiet moment (or the game isn't parked where the save was); try
+      // again next frame, for a few seconds.
+      if (++attempts >= kGeStateMaxAttempts) {
+        REXKRNL_INFO("GESTATE {} gave up after {} frames: {}", saving ? "save" : "load", attempts,
+                     message);
+        ge_toast(std::string(saving ? "Couldn't quicksave: " : "Couldn't quickload: ") + message,
+                 4.0);
+        pending = Op::kNone;
+      }
+      break;
+    case Result::kFailed:
+      ge_toast(std::string(saving ? "Quicksave failed: " : "Quickload failed: ") + message, 4.0);
+      pending = Op::kNone;
+      break;
+  }
+}
+}  // namespace
+
+// Current on-screen quicksave message (drawn by the post-FX overlay).
+bool ge_toast_current(std::string* text, float* alpha) {
+  std::lock_guard<std::mutex> lock(g_toast_mutex);
+  const auto now = std::chrono::steady_clock::now();
+  if (g_toast_text.empty() || now >= g_toast_until) return false;
+  *text = g_toast_text;
+  const float left = std::chrono::duration<float>(g_toast_until - now).count();
+  *alpha = left < 0.5f ? left / 0.5f : 1.0f;
+  return true;
+}
+
 void ge_inject_keyboard(PPCRegister& /*r11*/) {
   PPCContext* ctx; uint8_t* base; getcb(ctx, base); (void)ctx;
+
+  // Quicksave / quickload first: this is the frame's safe point.
+  ge_quickstate_poll();
 
   // Apply BeanTools community DATA bug-fixes once, before any level loads its
   // setup/fog/BG data. The data segment is live in guest RAM by the first input

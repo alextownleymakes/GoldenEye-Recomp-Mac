@@ -8,6 +8,7 @@ The original's features carry over: keyboard and mouse, online multiplayer, grap
 * **A self-contained app.** The game files are packed inside `GoldenEye.app`; drag it to Applications.
 * **Controller support.** Xbox, PlayStation (DualSense/DualShock) and other controllers work over Bluetooth or USB.
 * **Unlimited sprint (mod).** Press **L3** (or **Shift**) to sprint; it stays on until you press it again or stop moving. **R3** still crouches. Switch to hold-to-sprint under **Controls → Sprint Mode** in the pause menu.
+* **Quicksave / quickload (mod).** Emulator-style save states: click the left half of a PS4/PS5 touchpad (or press F5) to save, the right half (or F9) to load. See [Quicksave](#quicksave).
 * **A Windows build script (untested).** See [Building for Windows](#building-for-windows-untested).
 
 No game files are included or linked. You must supply the GoldenEye 007 Xbox 360 (XBLA) game files yourself.
@@ -69,11 +70,24 @@ Once the app is built you can delete the project folder (or just `out/` and `mac
 | Fire | RT / R2 | Left click |
 | Aim | LT / L2 | Right click |
 | **Sprint (unlimited)** | **L3** (click left stick) | **Shift** |
+| **Quicksave / quickload** | **Touchpad** left half / right half (PS4/PS5) | **F5** / **F9** |
 | Crouch | R3 | C / V |
 | Pause | Start | Return |
 | Recomp settings menu | — | Esc |
 
 Pair a PS5 or Xbox controller under **System Settings → Bluetooth**; it's detected automatically. While a controller is connected the mouse is ignored completely (no mouse-look, no cursor capture, mouse buttons do nothing), so it can't interfere with the controller or auto-aim. Keyboard keys can be rebound in the Esc menu.
+
+### Quicksave
+
+One quick slot, like an emulator's save states. Click the **left half** of the PS4/PS5 touchpad (or press **F5**) to save, the **right half** (or **F9**) to load. A message at the top of the screen confirms it. The save is kept on disk (`~/Library/Application Support/GoldenEye/quicksave.gestate`), so it survives quitting.
+
+Unlike an emulator, a recompiled game can only be frozen at a quiet moment, so:
+
+* Saving and loading happen at the next safe frame (usually instantly; it retries for a few seconds and tells you if it can't).
+* A quicksave can only be loaded in the same part of the game it was made in (e.g. during gameplay, not from the title menu), and it may refuse after a level change or after restarting the app.
+* Expect a brief audio blip on load. Off during online play. Turn it off in **Esc → Input → Quicksave**.
+
+This is new; if a load misbehaves, the log (see below) has `GESTATE` lines explaining why.
 
 ### Settings and logs
 

@@ -1,0 +1,708 @@
+== GESTATE lines
+3193:[2026-11-14 10:21:19.749] [info] [sys] [t67831] GESTATE save: frozen, writing
+== around the first GESTATE line (3193)
+[2026-11-14 10:21:13.845] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\texture\level\smpcomplexicon\default.rba' -> 0xc000000f
+[2026-11-14 10:21:13.845] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\texture\level\crypicon\default.rba' -> 0xc000000f
+[2026-11-14 10:21:13.845] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\texture\level\damicon\default.rba' -> 0xc000000f
+[2026-11-14 10:21:13.845] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\texture\level\arkicon\default.rba' -> 0xc000000f
+[2026-11-14 10:21:13.845] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\texture\level\runicon\default.rba' -> 0xc000000f
+[2026-11-14 10:21:13.845] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\texture\level\sevxicon\default.rba' -> 0xc000000f
+[2026-11-14 10:21:13.845] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\texture\level\junicon\default.rba' -> 0xc000000f
+[2026-11-14 10:21:13.845] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\texture\level\smptempleicon\default.rba' -> 0xc000000f
+[2026-11-14 10:21:13.845] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\texture\level\caveicon\default.rba' -> 0xc000000f
+[2026-11-14 10:21:13.846] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\texture\level\cradicon\default.rba' -> 0xc000000f
+[2026-11-14 10:21:13.846] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\texture\level\sevxbicon\default.rba' -> 0xc000000f
+[2026-11-14 10:21:13.846] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\texture\level\smplibicon\default.rba' -> 0xc000000f
+[2026-11-14 10:21:13.846] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\texture\level\smplibicon\default.rba' -> 0xc000000f
+[2026-11-14 10:21:13.846] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\texture\level\smplibicon\default.rba' -> 0xc000000f
+[2026-11-14 10:21:13.846] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\texture\level\smpcaveicon\default.rba' -> 0xc000000f
+[2026-11-14 10:21:13.862] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\skydome\control\default.bin' -> 0xc000000f
+[2026-11-14 10:21:13.876] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\prop\mainframe2_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:13.881] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\prop\mainframe1_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:13.884] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\prop\bodyarmour_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:13.888] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\prop\deskarecibo1_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:13.892] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\prop\keyboard1_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:13.895] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\prop\roofgun_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:13.898] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\prop\tvscreen_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:13.901] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\prop\metalcrate3_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:13.904] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\prop\ammocrate3_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:13.907] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\prop\tv1_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:13.911] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\prop\boxes4x4_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:13.914] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\prop\boxes3x4_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:13.918] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\prop\boxes2x4_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:13.921] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\prop\locker4_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:13.924] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\prop\window_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:13.928] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\prop\doorstarec1_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:13.932] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\prop\siloliftdoor_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:13.935] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\prop\vertdoor_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:13.944] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\ruger_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:13.946] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\ruger_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:13.948] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\prop\chrruger_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:13.956] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\mp5k_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:13.958] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\mp5k_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:13.960] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\prop\chrmp5k_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:13.973] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\cartridge_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:13.974] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\cartridge_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:13.975] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\cartridgerifle_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:13.976] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\cartridgerifle_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:13.977] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\cartridgeblue_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:13.979] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\cartridgeblue_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:13.980] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\cartridgeshell_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:13.982] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\cartridgeshell_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:13.983] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\fist_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:13.984] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\fist_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:13.985] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\knife_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:13.987] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\knife_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:13.988] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\throwingknife_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:13.990] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\throwingknife_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:13.991] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\ppk_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:13.992] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\ppk_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:13.994] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\ppksilenced_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:13.995] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\ppksilenced_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:13.997] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\tt33_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:13.998] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\tt33_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:13.999] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\skorpion_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.001] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\skorpion_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.002] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\ak47_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.004] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\ak47_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.005] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\uzi_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.007] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\uzi_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.008] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\mp5ksilenced_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.010] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\mp5ksilenced_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.011] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\spectre_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.012] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\spectre_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.013] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\m16_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.015] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\m16_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.016] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\fnp90_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.018] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\fnp90_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.019] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\shotgun_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.021] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\shotgun_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.022] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\automaticshotgun_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.024] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\automaticshotgun_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.025] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\sniperrifle_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.026] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\sniperrifle_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.027] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\goldengun_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.029] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\goldengun_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.030] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\silverppk_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.031] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\silverppk_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.032] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\goldppk_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.034] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\goldppk_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.035] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\laser_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.037] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\laser_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.038] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\watchlaser_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.043] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\watchlaser_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.044] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\grenadelauncher_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.046] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\grenadelauncher_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.048] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\rocketlauncher_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.049] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\rocketlauncher_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.051] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\grenade_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.052] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\grenade_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.053] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\timedmine_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.054] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\timedmine_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.055] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\proximitymine_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.056] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\proximitymine_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.058] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\remotemine_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.058] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\remotemine_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.060] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\trigger_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.063] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\trigger_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.065] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\taser_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.066] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\taser_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.068] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\bombcase_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.069] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\bombcase_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.069] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\plastique\default.bin' -> 0xc000000f
+[2026-11-14 10:21:14.070] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\plastique_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.070] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\plastique\default.bin' -> 0xc000000f
+[2026-11-14 10:21:14.070] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\plastique_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.070] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\flarepistol\default.bin' -> 0xc000000f
+[2026-11-14 10:21:14.071] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\flarepistol_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.071] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\flarepistol\default.bin' -> 0xc000000f
+[2026-11-14 10:21:14.071] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\flarepistol_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.071] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\pitongun\default.bin' -> 0xc000000f
+[2026-11-14 10:21:14.072] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\pitongun_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.072] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\pitongun\default.bin' -> 0xc000000f
+[2026-11-14 10:21:14.072] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\pitongun_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.072] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\bungee\default.bin' -> 0xc000000f
+[2026-11-14 10:21:14.072] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\bungee_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.073] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\bungee\default.bin' -> 0xc000000f
+[2026-11-14 10:21:14.073] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\bungee_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.074] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\doordecoder_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.075] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\doordecoder_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.076] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\bombdefuser\default.bin' -> 0xc000000f
+[2026-11-14 10:21:14.076] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\bombdefuser_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.076] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\bombdefuser\default.bin' -> 0xc000000f
+[2026-11-14 10:21:14.076] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\bombdefuser_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.077] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\camera_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.079] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\camera_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.079] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\lockexploder\default.bin' -> 0xc000000f
+[2026-11-14 10:21:14.079] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\lockexploder_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.080] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\lockexploder\default.bin' -> 0xc000000f
+[2026-11-14 10:21:14.080] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\lockexploder_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.080] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\doorexploder\default.bin' -> 0xc000000f
+[2026-11-14 10:21:14.080] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\doorexploder_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.081] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\doorexploder\default.bin' -> 0xc000000f
+[2026-11-14 10:21:14.081] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\doorexploder_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.082] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\briefcase_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.084] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\briefcase_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.085] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\weaponcase_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.087] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\weaponcase_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.087] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\safecrackercase\default.bin' -> 0xc000000f
+[2026-11-14 10:21:14.087] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\safecrackercase_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.087] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\safecrackercase\default.bin' -> 0xc000000f
+[2026-11-14 10:21:14.088] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\safecrackercase_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.089] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\keyanalysercase_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.090] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\keyanalysercase_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.092] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\bug_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.093] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\bug_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.094] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\microcamera_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.096] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\microcamera_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.096] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\bugdetector\default.bin' -> 0xc000000f
+[2026-11-14 10:21:14.096] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\bugdetector_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.097] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\bugdetector\default.bin' -> 0xc000000f
+[2026-11-14 10:21:14.097] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\bugdetector_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.098] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\explosivefloppy_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.099] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\explosivefloppy_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.100] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\polarizedglasses_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.102] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\polarizedglasses_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.102] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\darkglasses\default.bin' -> 0xc000000f
+[2026-11-14 10:21:14.102] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\darkglasses_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.102] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\darkglasses\default.bin' -> 0xc000000f
+[2026-11-14 10:21:14.103] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\darkglasses_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.103] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\creditcard\default.bin' -> 0xc000000f
+[2026-11-14 10:21:14.103] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\creditcard_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.103] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\creditcard\default.bin' -> 0xc000000f
+[2026-11-14 10:21:14.104] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\creditcard_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.105] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\gaskeyring_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.106] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\gaskeyring_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.108] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\datathief_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.109] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\datathief_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.110] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\watchidentifier\default.bin' -> 0xc000000f
+[2026-11-14 10:21:14.110] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\watchidentifier_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.110] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\watchidentifier\default.bin' -> 0xc000000f
+[2026-11-14 10:21:14.110] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\watchidentifier_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.112] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\watchcommunicator_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.114] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\watchcommunicator_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.114] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\watchgeigercounter\default.bin' -> 0xc000000f
+[2026-11-14 10:21:14.114] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\watchgeigercounter_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.114] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\watchgeigercounter\default.bin' -> 0xc000000f
+[2026-11-14 10:21:14.115] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\watchgeigercounter_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.115] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\watchmagnetrepel\default.bin' -> 0xc000000f
+[2026-11-14 10:21:14.115] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\watchmagnetrepel_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.115] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\watchmagnetrepel\default.bin' -> 0xc000000f
+[2026-11-14 10:21:14.116] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\watchmagnetrepel_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.116] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\watchmagnetattract\default.bin' -> 0xc000000f
+[2026-11-14 10:21:14.116] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\watchmagnetattract_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.118] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\watchmagnetattract_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.119] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\goldeneyekey_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.120] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\goldeneyekey_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.122] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\blackbox_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.123] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\blackbox_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.125] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\circuitboard_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.126] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\circuitboard_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.127] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\clipboard_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.129] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\clipboard_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.130] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\stafflist_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.131] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\stafflist_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.133] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\dossierred_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.134] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\dossierred_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.135] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\plans_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.136] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\plans_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.137] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\spyfile\default.bin' -> 0xc000000f
+[2026-11-14 10:21:14.137] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\spyfile_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.137] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\spyfile\default.bin' -> 0xc000000f
+[2026-11-14 10:21:14.137] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\spyfile_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.138] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\blueprints_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.139] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\blueprints_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.140] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\map_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.142] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\map_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.144] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\audiotape_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.145] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\audiotape_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.146] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\videotape_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.147] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\videotape_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.148] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\dattape_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.149] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\dattape_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.150] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\spooltape\default.bin' -> 0xc000000f
+[2026-11-14 10:21:14.150] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\spooltape_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.150] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\spooltape\default.bin' -> 0xc000000f
+[2026-11-14 10:21:14.150] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\spooltape_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.150] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\microfilm\default.bin' -> 0xc000000f
+[2026-11-14 10:21:14.151] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\microfilm_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.151] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\microfilm\default.bin' -> 0xc000000f
+[2026-11-14 10:21:14.151] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\microfilm_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.151] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\microcode\default.bin' -> 0xc000000f
+[2026-11-14 10:21:14.152] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\microcode_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.152] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\microcode\default.bin' -> 0xc000000f
+[2026-11-14 10:21:14.152] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\microcode_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.152] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\lectre\default.bin' -> 0xc000000f
+[2026-11-14 10:21:14.153] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\lectre_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.153] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\lectre\default.bin' -> 0xc000000f
+[2026-11-14 10:21:14.153] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\lectre_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.153] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\money\default.bin' -> 0xc000000f
+[2026-11-14 10:21:14.154] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\money_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.154] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\money\default.bin' -> 0xc000000f
+[2026-11-14 10:21:14.154] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\money_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.154] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\goldbar\default.bin' -> 0xc000000f
+[2026-11-14 10:21:14.155] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\goldbar_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.155] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\goldbar\default.bin' -> 0xc000000f
+[2026-11-14 10:21:14.155] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\goldbar_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.155] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\heroin\default.bin' -> 0xc000000f
+[2026-11-14 10:21:14.155] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\heroin_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.156] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\heroin\default.bin' -> 0xc000000f
+[2026-11-14 10:21:14.156] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\heroin_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.157] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\keycard_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.158] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\keycard_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.159] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\keyyale_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.159] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\keyyale\default.bin' -> 0xc000000f
+[2026-11-14 10:21:14.160] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\keyyale_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.161] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\gun\keybolt_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.162] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\gun\keybolt_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.164] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\char\suitlfhand_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.169] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\char\suitlfhand_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.171] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\prop\hatberet_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:14.291] [info] [gpu] [t67808] Creating graphics pipeline state with VS 0A6D1DD7767FDF27
+[2026-11-14 10:21:14.342] [info] [gpu] [t67808] Creating graphics pipeline state with VS EFA89B2C57A33A12, PS D34A0EB62DD0ABB2
+[2026-11-14 10:21:14.566] [info] [gpu] [t67808] Creating graphics pipeline state with VS 464CECCBA9292617, PS B92ED29001E74BC4
+[2026-11-14 10:21:14.686] [info] [gpu] [t67808] Creating graphics pipeline state with VS 464CECCBA9292617, PS B92ED29001E74BC4
+[2026-11-14 10:21:14.690] [info] [gpu] [t67808] Creating graphics pipeline state with VS 464CECCBA9292617, PS AB187F21F1252317
+[2026-11-14 10:21:14.811] [info] [gpu] [t67808] Creating graphics pipeline state with VS 464CECCBA9292617, PS AB187F21F1252317
+[2026-11-14 10:21:14.812] [info] [gpu] [t67808] Creating graphics pipeline state with VS 9F8BE9D6AB57DAD0, PS 38E1970DE0E91612
+[2026-11-14 10:21:14.838] [info] [gpu] [t67808] Creating graphics pipeline state with VS 9F8BE9D6AB57DAD0, PS 02A413D5A6ED655B
+[2026-11-14 10:21:14.865] [info] [gpu] [t67808] Creating graphics pipeline state with VS 6B5E141E724EEB40, PS 20BD6B6DCE4DCFA6
+[2026-11-14 10:21:14.984] [info] [gpu] [t67808] Creating graphics pipeline state with VS 464CECCBA9292617, PS DB98EE17F0E2695A
+[2026-11-14 10:21:15.101] [info] [gpu] [t67808] Creating graphics pipeline state with VS 6B5E141E724EEB40, PS 7EC338817B22493D
+[2026-11-14 10:21:15.217] [info] [gpu] [t67808] Creating graphics pipeline state with VS 6B5E141E724EEB40, PS 20BD6B6DCE4DCFA6
+[2026-11-14 10:21:15.218] [info] [gpu] [t67808] Creating graphics pipeline state with VS BACF3B916D6283B2, PS 7ABDFEFBCADB4BF9
+[2026-11-14 10:21:15.219] [info] [gpu] [t67808] Creating graphics pipeline state with VS 464CECCBA9292617, PS A8079E2862BBDB07
+[2026-11-14 10:21:15.222] [info] [gpu] [t67808] Creating graphics pipeline state with VS 6B5E141E724EEB40, PS 9A4C432B4EF48362
+[2026-11-14 10:21:15.338] [info] [gpu] [t67808] Creating graphics pipeline state with VS 6B5E141E724EEB40, PS 9A4C432B4EF48362
+[2026-11-14 10:21:15.339] [info] [gpu] [t67808] Creating graphics pipeline state with VS 13952B6C46B7B45A, PS 37D6F6AD685F80DF
+[2026-11-14 10:21:15.367] [info] [gpu] [t67808] Creating graphics pipeline state with VS 13952B6C46B7B45A, PS 9AE9E444F59EAB64
+[2026-11-14 10:21:15.394] [info] [gpu] [t67808] Creating graphics pipeline state with VS 6B5E141E724EEB40, PS 15E39784AF96E4D5
+[2026-11-14 10:21:15.507] [info] [gpu] [t67808] Creating graphics pipeline state with VS 239BB186E671FB10, PS D62037164E20A1E7
+[2026-11-14 10:21:15.633] [warning] [gpu] [t67808] Rejecting degenerate 8192x8191 texture descriptor (broken bloom) base=1EBFE000 fetch=[80024802 1EBFE086 03FFDFFF 00800C14 00000000 00000200]
+[2026-11-14 10:21:15.633] [info] [gpu] [t67808] Creating graphics pipeline state with VS BC83CA8D00933874, PS 5D448681EF02A235
+[2026-11-14 10:21:15.762] [info] [gpu] [t67808] Creating graphics pipeline state with VS 32393AC1BA36E450, PS 54AAA6882BF85C23
+[2026-11-14 10:21:15.771] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\head\headbrosnantimber\default.bin' -> 0xc000000f
+[2026-11-14 10:21:15.771] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\original\head\headbrosnantimber_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:15.771] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\head\headbrosnantimber\default.bin' -> 0xc000000f
+[2026-11-14 10:21:15.771] [warning] [krnl] [t67831] [NtCreateFile] FAILED: path='game:\files\new\head\headbrosnantimber_hits\default.rbh' -> 0xc000000f
+[2026-11-14 10:21:15.786] [info] [gpu] [t67808] Creating graphics pipeline state with VS 723EC197D31714F3, PS 2D2FA13EC6011659
+[2026-11-14 10:21:15.828] [info] [gpu] [t67808] Creating graphics pipeline state with VS 0CDA8ED5C0676A38, PS 2D2FA13EC6011659
+[2026-11-14 10:21:15.877] [info] [gpu] [t67808] Creating graphics pipeline state with VS C5480ED26A89139E, PS 2D2FA13EC6011659
+[2026-11-14 10:21:15.930] [info] [gpu] [t67808] Creating graphics pipeline state with VS 914FFD6B4A92426F, PS 2D2FA13EC6011659
+[2026-11-14 10:21:15.984] [info] [gpu] [t67808] Creating graphics pipeline state with VS 239BB186E671FB10, PS C587842B4D0ED503
+[2026-11-14 10:21:16.118] [info] [gpu] [t67808] Creating graphics pipeline state with VS 32393AC1BA36E450, PS 54AAA6882BF85C23
+[2026-11-14 10:21:16.118] [info] [gpu] [t67808] Creating graphics pipeline state with VS 464CECCBA9292617, PS A8079E2862BBDB07
+[2026-11-14 10:21:16.867] [info] [krnl] [t67831] GEGPU present#145793 dev=0x40001a80 cpcnt=292616
+[2026-11-14 10:21:17.434] [info] [gpu] [t67808] Creating graphics pipeline state with VS 6E791723A62E0721, PS 2D2FA13EC6011659
+[2026-11-14 10:21:17.490] [info] [gpu] [t67808] Creating graphics pipeline state with VS B6E1E3C092835EDF, PS 2D2FA13EC6011659
+[2026-11-14 10:21:17.542] [info] [gpu] [t67808] Creating graphics pipeline state with VS 1AF56AA3D93F8E11, PS 2D2FA13EC6011659
+[2026-11-14 10:21:17.653] [info] [gpu] [t67808] Creating graphics pipeline state with VS B4BEB4AE6D2CD411, PS A2601D7DD3878AD0
+[2026-11-14 10:21:17.850] [info] [gpu] [t67808] Creating graphics pipeline state with VS 723EC197D31714F3, PS C587842B4D0ED503
+[2026-11-14 10:21:17.853] [info] [gpu] [t67808] Creating graphics pipeline state with VS BACF3B916D6283B2, PS 7ABDFEFBCADB4BF9
+[2026-11-14 10:21:18.351] [info] [krnl] [t67831] GEGPU present#145857 dev=0x40001a80 cpcnt=292769
+[2026-11-14 10:21:19.417] [info] [krnl] [t67831] GEGPU present#145921 dev=0x40001a80 cpcnt=292897
+[2026-11-14 10:21:19.749] [info] [sys] [t67831] GESTATE save: frozen, writing
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.750] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.751] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.752] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.752] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.752] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.752] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.752] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.752] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.752] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.752] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.752] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.752] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.752] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.752] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.752] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.752] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.752] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.752] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.752] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.752] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.752] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.752] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.752] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.752] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.752] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.752] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.752] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.752] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.752] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.752] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.752] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.752] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.752] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.752] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.752] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.752] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.752] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.752] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.752] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.752] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.752] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.752] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.752] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.752] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.752] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.752] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.752] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.752] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:21:19.752] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+== most repeated (sample of the end)
+193548 ror] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x00000003701900
+   1 70190000) on thread 0xF8000028
+== last 100 lines
+[2026-11-14 10:22:15.654] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:22:15.654] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:22:15.654] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:22:15.654] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:22:15.654] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:22:15.654] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:22:15.654] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:22:15.654] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:22:15.654] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:22:15.654] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:22:15.654] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:22:15.654] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:22:15.654] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:22:15.654] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:22:15.654] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:22:15.654] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:22:15.654] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:22:15.654] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:22:15.654] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:22:15.654] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:22:15.654] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:22:15.654] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:22:15.654] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:22:15.654] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:22:15.654] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:22:15.654] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:22:15.654] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:22:15.654] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:22:15.654] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:22:15.654] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:22:15.654] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:22:15.654] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:22:15.654] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:22:15.654] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:22:15.654] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:22:15.654] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:22:15.654] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:22:15.654] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:22:15.654] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:22:15.654] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:22:15.654] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:22:15.654] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:22:15.654] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:22:15.654] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:22:15.654] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:22:15.654] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:22:15.654] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:22:15.654] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:22:15.654] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:22:15.654] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:22:15.654] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:22:15.654] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:22:15.654] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:22:15.654] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:22:15.654] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:22:15.654] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:22:15.654] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:22:15.654] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:22:15.654] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:22:15.654] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:22:15.654] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:22:15.654] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:22:15.654] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:22:15.654] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:22:15.654] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:22:15.654] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:22:15.654] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:22:15.654] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:22:15.654] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:22:15.654] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:22:15.654] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:22:15.654] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:22:15.654] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:22:15.654] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:22:15.654] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:22:15.654] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:22:15.654] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:22:15.654] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:22:15.654] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:22:15.654] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:22:15.654] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:22:15.654] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:22:15.654] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:22:15.654] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:22:15.654] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:22:15.654] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:22:15.654] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:22:15.654] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:22:15.654] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:22:15.654] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:22:15.654] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:22:15.654] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:22:15.654] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:22:15.654] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:22:15.654] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:22:15.654] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:22:15.654] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:22:15.654] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:22:15.654] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
+[2026-11-14 10:22:15.654] [error] [sys] [t67831] Unhandled guest access violation: read of guest 0x70190000 (host 0x0000000370190000) on thread 0xF8000028
