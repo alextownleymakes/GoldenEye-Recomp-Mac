@@ -130,6 +130,14 @@ address = 0x820BAF8C
 name = "ge_sprint_boost"
 registers = ["f0", "f13"]
 after_instruction = false
+# JUMP (mod): in Bond's vertical update (sub_820B94C8 = bondviewUpdatePlayerY),
+# after the ground height is found and before the game's fall physics run.
+# r11 = g_CurrentPlayer. ge_jump gives Bond upward speed when A was pressed.
+[[midasm_hook]]
+address = 0x820B96A0
+name = "ge_jump"
+registers = ["r11"]
+after_instruction = false
 # Hidden debug menu enable (TCRF: byte 0x82189F2B 0x0F->0x00). Replace the dead
 # `beq` at 0x82189F2C with a live gate so LB toggles the debug menu when the
 # ge_debug_menu cvar is on; off = original retail behaviour. See ge_hooks.cpp.

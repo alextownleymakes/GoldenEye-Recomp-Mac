@@ -27,6 +27,7 @@
 #include <rex/input/input_system.h>  // HasPhysicalGamepad (mouse-look off with a pad)
 #include <rex/system/ge_savestate.h>  // quicksave / quickload
 #include <chrono>
+#include <cmath>
 #include <filesystem>
 #include <mutex>
 #include <array>
@@ -1403,6 +1404,19 @@ std::array<std::atomic<bool>, 4> g_sprint_held{};
 std::array<bool, 4> g_sprint_toggled{};
 std::array<bool, 4> g_sprint_btn_prev{};
 
+// Jump (mod): frames left on a pending jump request per pad slot. Set on the A
+// press (input poll), consumed by ge_jump when that pad's Bond is on the ground.
+// A short window lets a press just before landing still jump.
+std::array<std::atomic<int>, 4> g_jump_request{};
+std::array<bool, 4> g_jump_btn_prev{};
+std::array<std::atomic<bool>, 4> g_jump_held{};
+constexpr int kJumpBufferFrames = 6;
+// While airborne with A held, ledges up to this far above the feet are grabbed.
+constexpr float kAirReach = 45.0f;
+// A ledge must be at least this far above the floor Bond is on; anything lower
+// he can already walk or step onto.
+constexpr float kMinRise = 35.0f;
+
 // Is this virtual key (Win32 VK code space) currently held?
 bool ge_vk_is_down(uint32_t vk) {
   // Mouse buttons (LMB/RMB/MMB/X1/X2) are ignored while a controller is
@@ -1466,6 +1480,18 @@ REXCVAR_DEFINE_DOUBLE(ge_sprint_speed, 1.75, "Input",
                       "Sprint speed multiplier (normal run 1.0, the game's own full-speed run "
                       "after 3s is 1.25)")
     .range(1.0, 3.0);
+// Jump: a mod, not in the original game. A (Cross on PlayStation, Space on the
+// keyboard) jumps; A still does everything it normally does (doors, menus).
+REXCVAR_DEFINE_BOOL(ge_jump_enable, true, "Input", "A button jumps (mod)");
+REXCVAR_DEFINE_DOUBLE(ge_jump_height, 50.0, "Input",
+                      "Jump height in game units (Bond is roughly 170 tall; crouching lowers "
+                      "him about 90)")
+    .range(10.0, 150.0);
+REXCVAR_DEFINE_BOOL(ge_mantle_enable, true, "Input",
+                    "Jumping at a ledge climbs onto it (mod)");
+REXCVAR_DEFINE_DOUBLE(ge_mantle_reach, 110.0, "Input",
+                      "Highest ledge (above Bond's feet, game units) a jump can mantle onto")
+    .range(40.0, 200.0);
 REXCVAR_DEFINE_STRING(ge_key_mv_up, "W", "Input/Keybinds", "Move forward (left stick up)");
 REXCVAR_DEFINE_STRING(ge_key_mv_down, "S", "Input/Keybinds", "Move back (left stick down)");
 REXCVAR_DEFINE_STRING(ge_key_mv_left, "A", "Input/Keybinds", "Move left (left stick left)");
@@ -1680,6 +1706,24 @@ void ge_inject_keyboard(PPCRegister& /*r11*/) {
     return;
   }
 
+  // Jump (A): latch a request on the press so the movement code can act on it.
+  {
+    const bool jump_on = REXCVAR_GET(ge_jump_enable);
+    const bool kb_active = REXCVAR_GET(ge_keyboard_enable) && ge_input_active();
+    for (uint32_t i = 0; i < 4; ++i) {
+      bool pressed = jump_on && (LD16(base, GE_PAD0 + GE_PAD_STRIDE * i) & BTN_A) != 0;
+      if (i == 0 && jump_on && kb_active && ge_key_down("ge_key_a")) pressed = true;
+      if (pressed && !g_jump_btn_prev[i]) {
+        g_jump_request[i].store(kJumpBufferFrames, std::memory_order_relaxed);
+      } else {
+        int left = g_jump_request[i].load(std::memory_order_relaxed);
+        if (left > 0) g_jump_request[i].store(left - 1, std::memory_order_relaxed);
+      }
+      g_jump_btn_prev[i] = pressed;
+      g_jump_held[i].store(pressed, std::memory_order_relaxed);
+    }
+  }
+
   // Mouse look runs every frame here, independent of the keyboard toggle. The
   // raw-mouse thread only accumulates deltas while the game is focused and the
   // cursor is captured, so this is a no-op in menus / when unfocused.
@@ -1742,6 +1786,25 @@ void ge_inject_keyboard(PPCRegister& /*r11*/) {
 //   f13 = speedboost (just loaded from player+0x284)
 // g_CurrentPlayer is at 0x82F1FAAC (lwz r10,-1364(r30), r30 = 0x82F20000).
 // ---------------------------------------------------------------------------
+// Which pad slot drives this player? -1 if none on this console.
+static int ge_pad_slot_for_player(uint8_t* base, uint32_t player) {
+  if (rex::cvar::GetFlagByName("ge_online_enable") == "true") {
+    // Online (System Link): one local Bond per console, always on pad 0. It is
+    // the player whose viewport offset (+0x904) is 0; remote Bonds are never
+    // driven from this console's pad.
+    for (uint32_t i = 0; i < 4; ++i) {
+      const uint32_t p = LD32(base, 0x82F1FA98u + i * 4u);
+      if (p && LD32(base, p + 0x904u) == 0u) return p == player ? 0 : -1;
+    }
+    return -1;
+  }
+  // Single player / split-screen: players[i] is driven by pad i.
+  for (uint32_t i = 0; i < 4; ++i) {
+    if (LD32(base, 0x82F1FA98u + i * 4u) == player) return static_cast<int>(i);
+  }
+  return -1;
+}
+
 void ge_sprint_boost(PPCRegister& f0, PPCRegister& f13) {
   if (!REXCVAR_GET(ge_sprint_enable) || f0.f64 <= 0.0) return;  // forward only
   PPCContext* ctx; uint8_t* base; getcb(ctx, base); (void)ctx;
@@ -1749,32 +1812,193 @@ void ge_sprint_boost(PPCRegister& f0, PPCRegister& f13) {
   const uint32_t cur = LD32(base, GE_BONDVIEW_CUR);
   if (!cur) return;
 
-  // Which pad drives the player being moved?
-  int slot = -1;
-  if (rex::cvar::GetFlagByName("ge_online_enable") == "true") {
-    // Online (System Link): one local Bond per console, always on pad 0. It is
-    // the player whose viewport offset (+0x904) is 0; remote Bonds never sprint
-    // from this console's pad.
-    for (uint32_t i = 0; i < 4; ++i) {
-      const uint32_t p = LD32(base, 0x82F1FA98u + i * 4u);
-      if (p && LD32(base, p + 0x904u) == 0u) {
-        if (p == cur) slot = 0;
-        break;
-      }
-    }
-  } else {
-    // Single player / split-screen: players[i] is driven by pad i.
-    for (uint32_t i = 0; i < 4; ++i) {
-      if (LD32(base, 0x82F1FA98u + i * 4u) == cur) {
-        slot = static_cast<int>(i);
-        break;
-      }
-    }
-  }
+  const int slot = ge_pad_slot_for_player(base, cur);
   if (slot < 0 || !g_sprint_held[slot].load(std::memory_order_relaxed)) return;
 
   const double sprint = REXCVAR_GET(ge_sprint_speed);
   if (f13.f64 < sprint) f13.f64 = sprint;
+}
+
+// ---------------------------------------------------------------------------
+// JUMP (mod). Hooked in Bond's vertical update (sub_820B94C8 = the decomp's
+// bondviewUpdatePlayerY) at 0x820B96A0, just after the ground height under Bond
+// has been worked out and before the game applies its own fall physics.
+// Player fields (XBLA offset = N64 decomp offset + 0x104 in this block):
+//   +0x174 feet height   (decomp field_70)
+//   +0x178 ground height (decomp stanHeight)
+//   +0x180 vertical speed per frame, + = up (decomp field_7C)
+// A jump just gives Bond an upward speed and lifts him a hair off the ground.
+// From there the game's own falling code (the same one used when walking off a
+// ledge) carries him up, brings him down with its normal gravity and plays its
+// normal landing dip, so collision and movement stay the game's own.
+//   r11 = g_CurrentPlayer (the player being updated)
+// ---------------------------------------------------------------------------
+namespace {
+// Mantle state per pad slot: Bond is rising toward a ledge and is placed on it
+// once his feet clear its top.
+struct GeMantle {
+  bool active = false;
+  uint32_t player = 0, tile = 0;
+  float x = 0.f, z = 0.f, top = 0.f;
+  int frames = 0;
+};
+std::array<GeMantle, 4> g_mantle{};
+
+// The game's own stanFindTileBelowPos (sub_821117B0): the highest floor tile
+// under (x, y, z) anywhere in the level, or 0. *top = that floor's height.
+// Called on the game thread from inside a hook: the guest registers are saved
+// and restored around it, and its arguments live in free stack below r1.
+uint32_t ge_find_floor_below(PPCContext* ctx, uint8_t* base, float x, float y, float z,
+                             float* top) {
+  const PPCContext saved = *ctx;
+  const uint32_t sp = (saved.r1.u32 - 0x400u) & ~0xFu;
+  const uint32_t pos = sp + 0x100u, out = sp + 0x110u;
+  STF32(base, pos, x);
+  STF32(base, pos + 4, y);
+  STF32(base, pos + 8, z);
+  STF32(base, out, -1.0e30f);
+  ctx->r1.u32 = sp;
+  ctx->r3.u32 = pos;
+  ctx->r4.u32 = 0;  // any room
+  ctx->r5.u32 = out;
+  sub_821117B0(*ctx, base);
+  const uint32_t tile = ctx->r3.u32;
+  *top = LDF32(base, out);
+  *ctx = saved;
+  return tile;
+}
+
+// Look for a flat ledge in front of Bond whose top lies between min_top and
+// max_top. Probes forward from his collision
+// circle; the first floor found in range is the ledge's front edge, and Bond is
+// placed a body-width past it, where the same floor must continue (so the top
+// is flat and wide enough to stand on).
+bool ge_find_ledge(PPCContext* ctx, uint8_t* base, uint32_t player, float min_top,
+                   float max_top, GeMantle* m) {
+  constexpr uint32_t kPosX = 0x5B4u, kPosZ = 0x5BCu, kRadius = 0x5D8u, kTheta = 0x254u;
+  const float px = LDF32(base, player + kPosX);
+  const float pz = LDF32(base, player + kPosZ);
+  float radius = LDF32(base, player + kRadius);
+  if (!(radius > 5.f && radius < 80.f)) radius = 30.f;
+  const float theta = LDF32(base, player + kTheta) * 0.017453292f;
+  const float fx = -std::sin(theta), fz = std::cos(theta);  // theta_transform
+  const float probe_y = max_top;
+
+  for (float d = radius + 4.f; d <= radius + 40.f; d += 6.f) {
+    float edge_top = 0.f;
+    if (!ge_find_floor_below(ctx, base, px + fx * d, probe_y, pz + fz * d, &edge_top)) continue;
+    if (edge_top < min_top || edge_top > probe_y) continue;
+    // Stand point: a body-width onto the ledge; must be the same flat top.
+    const float sd = d + radius + 4.f;
+    const float sx = px + fx * sd, sz = pz + fz * sd;
+    float stand_top = 0.f;
+    const uint32_t tile = ge_find_floor_below(ctx, base, sx, probe_y, sz, &stand_top);
+    if (!tile || std::fabs(stand_top - edge_top) > 8.f) return false;
+    m->tile = tile;
+    m->x = sx;
+    m->z = sz;
+    m->top = stand_top;
+    return true;
+  }
+  return false;
+}
+
+// Put Bond on the ledge the way the game's own move does
+// (bondviewTrySimpleMovePlayerCollision): current tile + collision x/z. Feet go
+// a hair above the top so the game's landing code settles him on it.
+void ge_place_on_ledge(uint8_t* base, uint32_t player, const GeMantle& m) {
+  constexpr uint32_t kTile = 0x5B0u, kPosX = 0x5B4u, kPosZ = 0x5BCu;
+  STF32(base, player + kPosX, m.x);
+  STF32(base, player + kPosZ, m.z);
+  ST32(base, player + kTile, m.tile);
+  STF32(base, player + 0x178u, m.top);         // ground
+  STF32(base, player + 0x174u, m.top + 0.5f);  // feet
+  STF32(base, player + 0x180u, 0.f);           // vertical speed
+}
+}  // namespace
+
+void ge_jump(PPCRegister& r11) {
+  if (!REXCVAR_GET(ge_jump_enable)) return;
+  PPCContext* ctx; uint8_t* base; getcb(ctx, base);
+  const uint32_t player = r11.u32;
+  if (!player) return;
+  const int slot = ge_pad_slot_for_player(base, player);
+  if (slot < 0) return;
+  GeMantle& m = g_mantle[slot];
+  if (m.active && m.player != player) m.active = false;
+
+  constexpr uint32_t kFeet = 0x174u, kGround = 0x178u, kVSpeed = 0x180u;
+  constexpr uint32_t kSpecialTile = 8428u;  // decomp field_2A6C (tile swap in progress)
+  constexpr float kGravity = 0.27777779f;   // bondviewUpdatePlayerY's gravity, /frame^2
+
+  // Not while paused, in a cutscene, with the watch up, or dead.
+  if (LD32(base, GE_PAUSE_FLAG) != 0 || LD32(base, player + GE_OFF_DISABLED) != 0 ||
+      LD32(base, player + GE_OFF_WATCH) != 0) {
+    g_jump_request[slot].store(0, std::memory_order_relaxed);
+    m.active = false;
+    return;
+  }
+
+  const float feet = LDF32(base, player + kFeet);
+  const float ground = LDF32(base, player + kGround);
+  const float vspeed = LDF32(base, player + kVSpeed);
+  const bool grounded = feet - ground <= 2.0f && vspeed <= 0.01f;
+  const bool mantle_on = REXCVAR_GET(ge_mantle_enable) && LD32(base, player + kSpecialTile) == 0;
+
+  // A mantle in progress: once the feet clear the ledge top, step onto it.
+  if (m.active) {
+    if (++m.frames > 90 || (vspeed <= 0.f && feet < m.top - 1.f && grounded)) {
+      m.active = false;  // fell short or was interrupted; just land normally
+    } else if (feet >= m.top) {
+      ge_place_on_ledge(base, player, m);
+      m.active = false;
+    }
+    return;
+  }
+
+  // Start a mantle toward the ledge: launch just high enough to clear it (the
+  // game's own fall code carries him up), or step straight on if already above.
+  auto start_mantle = [&](float from_feet) {
+    const float rise = m.top - from_feet;
+    m.player = player;
+    m.frames = 0;
+    if (rise <= 0.f) {
+      ge_place_on_ledge(base, player, m);
+      return;
+    }
+    m.active = true;
+    const float v = std::sqrt(2.0f * kGravity * (rise + 6.0f));
+    if (v > vspeed) STF32(base, player + kVSpeed, v);
+    if (feet <= ground + 0.01f) STF32(base, player + kFeet, ground + 0.01f);
+  };
+
+  // In the air with A held: grab a ledge that's now within reach.
+  if (!grounded && mantle_on && g_jump_held[slot].load(std::memory_order_relaxed)) {
+    if (ge_find_ledge(ctx, base, player, ground + kMinRise, feet + kAirReach, &m)) {
+      start_mantle(feet);
+    }
+    return;
+  }
+
+  if (g_jump_request[slot].load(std::memory_order_relaxed) <= 0) return;
+  // Only from the ground (keep the request briefly if he's about to land).
+  if (!grounded) return;
+  g_jump_request[slot].store(0, std::memory_order_relaxed);
+
+  // A ledge in front within reach: mantle onto it instead of a plain jump.
+  if (mantle_on) {
+    const float reach = static_cast<float>(REXCVAR_GET(ge_mantle_reach));
+    if (ge_find_ledge(ctx, base, player, feet + kMinRise, feet + reach, &m)) {
+      start_mantle(feet);
+      return;
+    }
+  }
+
+  // Plain jump: launch speed v = sqrt(2 * g * height) peaks at `height`.
+  const float height = static_cast<float>(REXCVAR_GET(ge_jump_height));
+  const float v = std::sqrt(2.0f * kGravity * height);
+  STF32(base, player + kVSpeed, v);
+  STF32(base, player + kFeet, ground + 0.01f);
 }
 
 // ===========================================================================

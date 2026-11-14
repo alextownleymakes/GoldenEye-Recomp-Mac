@@ -47,6 +47,19 @@ Press **L3** (click the left stick) to sprint while moving forward. By default i
 * **Sprint Mode** (pause menu → Controls), or `ge_sprint_toggle` in `ge.toml`: Toggle (default, `true`) or Hold (`false`).
 * `ge_sprint_enable = false` turns it off and gives L3 back to crouching.
 
+## Jump (mod)
+
+Press **A** (Cross on PlayStation, **Space** on the keyboard) to jump. A still does what it always did (opens doors, confirms menus), so pressing it at a door opens the door and also hops. Bond jumps and falls with the game's own falling physics, including the small dip on landing.
+
+* `ge_jump_height` in `ge.toml` sets how high (default `50`; Bond is about 170 units tall).
+* **Jump** (pause menu → Controls), or `ge_jump_enable = false` in `ge.toml`, turns it off.
+
+**Mantling.** Jump while facing a ledge and Bond climbs onto it. You can also jump and hold A as you rise past one. A "ledge" is any flat floor in the level in front of Bond, higher than a step and within reach (110 units by default, about two-thirds of his height), and wide enough to stand on. He rises with the game's own physics and is placed on top once his feet clear it.
+
+* `ge_mantle_reach` in `ge.toml` sets the highest ledge he can climb (default `110`).
+* **Mantle onto ledges** (pause menu → Controls), or `ge_mantle_enable = false`, turns it off and leaves plain jumping.
+* It uses the level's floor data, so crates and other objects aren't climbable (the game has no way to stand on objects). Where a wall is thin and a higher floor sits right behind it, Bond can end up mantling through it.
+
 This is part of the source (`src/ge_hooks.cpp` + `ge_config.toml`), so every build, on any platform, gets it. It works by raising the game's own forward-speed multiplier while sprint is on, so movement still goes through the game's normal collision.
 
 ## Quicksave (mod)

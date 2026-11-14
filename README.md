@@ -8,6 +8,7 @@ The original's features carry over: keyboard and mouse, online multiplayer, grap
 * **A self-contained app.** The game files are packed inside `GoldenEye.app`; drag it to Applications.
 * **Controller support.** Xbox, PlayStation (DualSense/DualShock) and other controllers work over Bluetooth or USB.
 * **Unlimited sprint (mod).** Press **L3** (or **Shift**) to sprint; it stays on until you press it again or stop moving. **R3** still crouches. Switch to hold-to-sprint under **Controls → Sprint Mode** in the pause menu.
+* **Jump (mod).** Press **A** (Cross on PlayStation, Space on the keyboard) to jump; jump at a ledge to mantle onto it. A still opens doors and confirms menus as before. Turn it off under **Controls → Jump** in the pause menu, or set `ge_jump_height` in `ge.toml`.
 * **Quicksave / quickload (mod).** Emulator-style save states: click the left half of a PS4/PS5 touchpad (or press F5) to save, the right half (or F9) to load. See [Quicksave](#quicksave).
 * **A Windows build script (untested).** See [Building for Windows](#building-for-windows-untested).
 
@@ -70,6 +71,7 @@ Once the app is built you can delete the project folder (or just `out/` and `mac
 | Fire | RT / R2 | Left click |
 | Aim | LT / L2 | Right click |
 | **Sprint (unlimited)** | **L3** (click left stick) | **Shift** |
+| **Jump** | **A** / **Cross** | **Space** |
 | **Quicksave / quickload** | **Touchpad** left half / right half (PS4/PS5) | **F5** / **F9** |
 | Crouch | R3 | C / V |
 | Pause | Start | Return |
@@ -100,6 +102,15 @@ These `ge.toml` options control sprint:
 ge_sprint_speed = 1.75     # 1.0 = normal run; the game's own "full speed" is 1.25
 ge_sprint_toggle = true    # false = hold to sprint (also in Controls → Sprint Mode)
 ge_sprint_enable = false   # turn sprint off; L3 crouches again
+```
+
+And these control jump and mantling:
+
+```toml
+ge_jump_height = 50.0      # how high Bond jumps (game units; he's about 170 tall)
+ge_jump_enable = false     # turn jump off (also in Controls → Jump)
+ge_mantle_reach = 110.0    # highest ledge a jump can climb onto
+ge_mantle_enable = false   # plain jumps only (also in Controls → Mantle onto ledges)
 ```
 
 ## Online

@@ -685,6 +685,28 @@ void GeMenuDialog::DrawContent(ImGuiIO& /*io*/) {
       ImGui::Spacing();
       ImGui::Separator();
       ImGui::Spacing();
+      ImGui::TextColored(ImColor(kTitle), "JUMP");
+      ImGui::Spacing();
+      {
+        bool jump = GetCvarB("ge_jump_enable");
+        if (ImGui::Checkbox("Jump", &jump)) {
+          SetCvarB("ge_jump_enable", jump);
+          if (callbacks_.persist_config) callbacks_.persist_config();
+        }
+        ImGui::TextColored(ImColor(kInkDim),
+                           "(A / Cross / Space jumps; A still opens doors as normal)");
+        bool mantle = GetCvarB("ge_mantle_enable");
+        if (ImGui::Checkbox("Mantle onto ledges", &mantle)) {
+          SetCvarB("ge_mantle_enable", mantle);
+          if (callbacks_.persist_config) callbacks_.persist_config();
+        }
+        ImGui::TextColored(ImColor(kInkDim),
+                           "(jump at a ledge, or hold A mid-air near one, to climb onto it)");
+      }
+
+      ImGui::Spacing();
+      ImGui::Separator();
+      ImGui::Spacing();
       ImGui::TextColored(ImColor(kTitle), "QUICKSAVE");
       ImGui::Spacing();
       {
