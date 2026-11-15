@@ -561,6 +561,31 @@ void GeMenuDialog::DrawContent(ImGuiIO& /*io*/) {
       ImGui::Separator();
       ImGui::Spacing();
 
+      // --- Minimap (mod; see ge_minimap.h) ---
+      ImGui::TextColored(ImColor(kTitle), "MINIMAP");
+      {
+        bool map = GetCvarB("ge_minimap");
+        if (ImGui::Checkbox("Minimap", &map)) {
+          SetCvarB("ge_minimap", map);
+          if (callbacks_.persist_config) callbacks_.persist_config();
+        }
+        ImGui::BeginDisabled(!map);
+        float range = GetCvarF("ge_minimap_range");
+        if (ImGui::SliderFloat("Map range", &range, 400.0f, 4000.0f, "%.0f")) {
+          SetCvarF("ge_minimap_range", range);
+        }
+        if (ImGui::IsItemDeactivatedAfterEdit() && callbacks_.persist_config) {
+          callbacks_.persist_config();
+        }
+        ImGui::EndDisabled();
+        ImGui::TextColored(ImColor(kInkDim),
+                           "(red: guards, grey X: items, yellow: ammo, green: next objective)");
+      }
+
+      ImGui::Spacing();
+      ImGui::Separator();
+      ImGui::Spacing();
+
       // --- Post-FX (live full-screen filter; see ge_postfx) ---
       ImGui::TextColored(ImColor(kTitle), "POST-FX");
       bool pfx_on = GetCvarB("postfx_enabled");

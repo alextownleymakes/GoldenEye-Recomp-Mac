@@ -107,3 +107,14 @@ Three additions were made during the port:
 
 * Mouse sensitivity may feel different from Windows because macOS reports motion differently. Adjust it in the pause menu.
 * Graphics on macOS go through MoltenVK. ReXGlue's macOS support is new, so expect some rendering bugs that don't happen on Windows.
+
+## Minimap (mod)
+
+A circular minimap sits in the bottom-right corner. It's drawn from the level's own floor map, so it shows the walkable floor and walls of the floor Bond is on, turning and sliding around him (he's the white arrow in the middle, always facing up).
+
+* **Red dots:** guards (only living ones).
+* **Grey X:** things on the ground: weapons, keys, body armour.
+* **Yellow squares:** ammo boxes and magazines.
+* **Green diamond:** the next objective (the first one not yet done on your difficulty): the thing to destroy, collect or photograph, or the place to go. It sticks to the edge of the map when it's further away. Objectives that complete from a scripted event with no place in the level (e.g. "minimize civilian casualties") have nothing to point at.
+
+Turn it off or change how far it shows under **Video → Minimap** in the pause menu, or `ge_minimap = false` / `ge_minimap_range = 1200` in `ge.toml`. It's hidden while the watch is up.

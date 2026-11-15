@@ -1016,10 +1016,10 @@ index ae72b7a..54eb34b 100644
    auto guest_tick_count = UpdateGuestClock();
    return guest_tick_count;
 diff --git a/src/core/logging.cpp b/src/core/logging.cpp
-index e8de147..b2ec2fe 100644
+index e8de147..e28d908 100644
 --- a/src/core/logging.cpp
 +++ b/src/core/logging.cpp
-@@ -14,9 +14,11 @@
+@@ -14,13 +14,17 @@
  #include <charconv>
  #include <filesystem>
  #include <map>
@@ -1031,7 +1031,56 @@ index e8de147..b2ec2fe 100644
  #include <unordered_map>
  #include <vector>
  
-@@ -173,10 +175,24 @@ spdlog::level::level_enum ResolveCategoryLevel(const std::string& name) {
+ #include <spdlog/sinks/basic_file_sink.h>
++#include <spdlog/sinks/base_sink.h>
++#include <spdlog/details/file_helper.h>
+ #include <spdlog/sinks/stdout_color_sinks.h>
+ 
+ #include <toml++/toml.hpp>
+@@ -65,6 +69,42 @@ bool g_initialized = false;
+ std::mutex g_mutex;
+ LogConfig g_config;
+ 
++// A log file that stops growing at a fixed size. A message that repeats
++// endlessly (a stuck error) once wrote a 13 GB log and filled the disk; past
++// the cap the rest of the run's messages are dropped, after one note.
++class CappedFileSink final : public spdlog::sinks::base_sink<std::mutex> {
++ public:
++  CappedFileSink(const std::string& path, size_t cap_bytes) : cap_(cap_bytes) {
++    file_.open(path, false);
++  }
++
++ protected:
++  void sink_it_(const spdlog::details::log_msg& msg) override {
++    if (written_ >= cap_) return;
++    spdlog::memory_buf_t buf;
++    this->formatter_->format(msg, buf);
++    file_.write(buf);
++    written_ += buf.size();
++    if (written_ >= cap_) {
++      spdlog::memory_buf_t note;
++      const std::string text = fmt::format(
++          "[log size limit of {} MB reached; the rest of this run is not logged]\n",
++          cap_ / (1024 * 1024));
++      note.append(text.data(), text.data() + text.size());
++      file_.write(note);
++      file_.flush();
++    }
++  }
++  void flush_() override { file_.flush(); }
++
++ private:
++  spdlog::details::file_helper file_;
++  size_t cap_;
++  size_t written_ = 0;
++};
++
++constexpr size_t kLogFileCapBytes = 64ull * 1024 * 1024;
++
+ std::optional<int> RunNumber(const std::filesystem::path& file, std::string_view prefix) {
+   if (file.extension() != ".log") {
+     return std::nullopt;
+@@ -173,10 +213,24 @@ spdlog::level::level_enum ResolveCategoryLevel(const std::string& name) {
    return g_config.default_level;
  }
  
@@ -1057,7 +1106,16 @@ index e8de147..b2ec2fe 100644
    logger->set_level(ResolveCategoryLevel(name));
    logger->flush_on(g_config.flush_level);
    spdlog::register_logger(logger);
-@@ -276,6 +292,18 @@ void InitLogging(const LogConfig& config) {
+@@ -268,7 +322,7 @@ void InitLogging(const LogConfig& config) {
+     resolved_path = NextSequentialLogPath(log_dir, config.app_name);
+   }
+   if (!resolved_path.empty()) {
+-    auto sink = std::make_shared<spdlog::sinks::basic_file_sink_mt>(resolved_path.string(), false);
++    auto sink = std::make_shared<CappedFileSink>(resolved_path.string(), kLogFileCapBytes);
+     sink->set_level(spdlog::level::trace);
+     sink->set_pattern(config.file_pattern);
+     g_file_sink = sink;
+@@ -276,6 +330,18 @@ void InitLogging(const LogConfig& config) {
  
    g_extra_sinks = config.extra_sinks;
  
@@ -4810,10 +4868,54 @@ index c24fbd1..9cd3946 100644
    REXSYS_DEBUG("XEvent {:08X} ({})", handle(), manual_reset_ ? "manual" : "auto");
    SaveObject(stream);
 diff --git a/src/system/xmemory.cpp b/src/system/xmemory.cpp
-index 76cc877..607ede4 100644
+index 76cc877..f96ae71 100644
 --- a/src/system/xmemory.cpp
 +++ b/src/system/xmemory.cpp
-@@ -780,6 +780,42 @@ bool Memory::Restore(stream::ByteStream* stream) {
+@@ -9,6 +9,8 @@
+  * @modified    Tom Clay, 2026 - Adapted for ReXGlue runtime
+  */
+ 
++#include <atomic>
++#include <chrono>
+ #include <algorithm>
+ #include <cstring>
+ #include <utility>
+@@ -543,10 +545,30 @@ bool Memory::AccessViolationCallback(std::unique_lock<std::recursive_mutex> glob
+   uint32_t virtual_address = HostToGuestVirtual(host_address);
+   BaseHeap* heap = LookupHeap(virtual_address);
+   if (!heap || heap->heap_type() != memory::HeapType::kGuestPhysical) {
+-    REXSYS_ERROR(
+-        "Unhandled guest access violation: {} of guest 0x{:08X} (host 0x{:016X}) on thread 0x{:X}",
+-        is_write ? "write" : "read", virtual_address, reinterpret_cast<uintptr_t>(host_address),
+-        rex::thread::current_thread_id());
++    // The same fault can repeat millions of times a second (a stuck access),
++    // which once filled the disk with log lines: log the first few, then a
++    // count every 5 seconds.
++    static std::atomic<uint32_t> s_last_addr{0xFFFFFFFFu};
++    static std::atomic<uint64_t> s_repeats{0};
++    static std::atomic<int64_t> s_last_ms{0};
++    const int64_t now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
++                               std::chrono::steady_clock::now().time_since_epoch())
++                               .count();
++    uint64_t repeats = 0;
++    if (s_last_addr.exchange(virtual_address) == virtual_address) {
++      repeats = ++s_repeats;
++    } else {
++      s_repeats = 0;
++    }
++    if (repeats < 10 || now_ms - s_last_ms.load() >= 5000) {
++      s_last_ms = now_ms;
++      REXSYS_ERROR(
++          "Unhandled guest access violation: {} of guest 0x{:08X} (host 0x{:016X}) on thread "
++          "0x{:X}{}",
++          is_write ? "write" : "read", virtual_address, reinterpret_cast<uintptr_t>(host_address),
++          rex::thread::current_thread_id(),
++          repeats >= 10 ? fmt::format(" (repeated {} times)", repeats) : std::string());
++    }
+     return false;
+   }
+ 
+@@ -780,6 +802,42 @@ bool Memory::Restore(stream::ByteStream* stream) {
    return true;
  }
  
@@ -4856,7 +4958,7 @@ index 76cc877..607ede4 100644
  //=============================================================================
  // Recompiled Code Function Table
  //=============================================================================
-@@ -1240,6 +1276,145 @@ bool BaseHeap::Restore(stream::ByteStream* stream) {
+@@ -1240,6 +1298,145 @@ bool BaseHeap::Restore(stream::ByteStream* stream) {
    return true;
  }
  

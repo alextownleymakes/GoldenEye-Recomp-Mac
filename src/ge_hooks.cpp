@@ -28,6 +28,12 @@
 #include <rex/system/ge_savestate.h>  // quicksave / quickload
 #include <chrono>
 #include <cmath>
+#include <mutex>
+#include <unordered_set>
+
+#include "ge_minimap.h"
+
+#include <rex/memory/utils.h>
 #include <algorithm>
 #include <vector>
 #include <filesystem>
@@ -1914,6 +1920,18 @@ struct GeOnTop {
 };
 std::array<GeOnTop, 4> g_on_top{};
 
+// Can the host read guest memory at addr (len bytes)? Pointers taken out of
+// game data are checked before following them, so a stale or garbage one is
+// skipped instead of faulting.
+bool ge_readable(const uint8_t* base, uint32_t addr, uint32_t len = 4) {
+  if (addr < 0x10000u || addr > 0xFFFFFFFFu - len) return false;
+  size_t length = 0;
+  rex::memory::PageAccess access = rex::memory::PageAccess::kNoAccess;
+  if (!rex::memory::QueryProtect(const_cast<uint8_t*>(base + addr), length, access)) return false;
+  return (static_cast<int>(access) & static_cast<int>(rex::memory::PageAccess::kReadOnly)) != 0 &&
+         length >= len;
+}
+
 int ge_player_index(uint8_t* base, uint32_t player) {
   for (uint32_t i = 0; i < 4; ++i) {
     if (LD32(base, 0x82F1FA98u + i * 4u) == player) return static_cast<int>(i);
@@ -2133,7 +2151,8 @@ const std::vector<GeSolid>& ge_solids(PPCContext* ctx, uint8_t* base, uint32_t p
   ST32(base, rooms + 4u * nrooms, 0xFFFFFFFFu);
   ctx->r3.u32 = rooms;
   sub_820CEF38(*ctx, base);  // roomGetProps -> s16 list, < 0 ends
-  const uint32_t ids = LD32(base, kPropListPtr);
+  uint32_t ids = LD32(base, kPropListPtr);
+  if (!ge_readable(base, ids, 2)) ids = 0;
   const uint32_t self = LD32(base, player + kOffProp);
   for (uint32_t k = 0; ids && k < 512; ++k) {
     const int16_t id = static_cast<int16_t>(LD16(base, ids + 2u * k));
@@ -2158,6 +2177,7 @@ const std::vector<GeSolid>& ge_solids(PPCContext* ctx, uint8_t* base, uint32_t p
     int n = static_cast<int>(LD32(base, out + 4));
     if (!poly || n < 3) continue;
     if (n > 12) n = 12;
+    if (!ge_readable(base, poly, 8u * static_cast<uint32_t>(n))) continue;
     GeSolid s;
     s.prop = prop;
     s.type = base[prop];
@@ -2491,12 +2511,277 @@ bool ge_on_top_valid(uint8_t* base, uint32_t player, int idx) {
 }
 }  // namespace
 
+// ===========================================================================
+// MINIMAP (mod). Built here on the game thread once a frame (from ge_jump, for
+// the local player), drawn by the overlay (ge_postfx.cpp) from a snapshot.
+//   * floors and walls: the level's floor map ("stan"): per-room tile lists at
+//     0x82F644D0 (count @0x82F644C8). A tile: word 0 (0 = end of list), byte 3
+//     room, half 6 = point count << 12 | plane points, then points of 8 bytes
+//     (s16 x, y, z, u16 link; link 0 = no neighbour = wall). Floor-map units =
+//     world * [0x8272D56C]; tile size in bytes by point count at 0x8272D574.
+//     (All from stanFindTileBelowPos, sub_821117B0.)
+//   * markers: props in every room (roomGetProps, a few rooms at a time).
+//     XBLA PropRecord: type @0, obj/chr @8, pos @12/16/20. Guards count while
+//     they still have collision (alive). Object type @obj+3 (PROPDEF_*).
+//   * objective: the first incomplete objective for this difficulty (status
+//     sub_820CC0D0, difficulty byte @entry+15 vs sub_8209F598), and its
+//     locatable targets: objects by tag (objFindByTagId sub_820CBF58 -> obj,
+//     prop @obj+16) to destroy / collect / photograph, and "enter room" /
+//     "deposit in room" pads (g_CurrentSetup @0x82F303A0: pads @+24, 44 bytes;
+//     bound pads @+28, 68 bytes; position first). Entries walk by
+//     sub_820D0010(entry) words until type 24 (OBJECTIVE_END).
+// ===========================================================================
+REXCVAR_DEFINE_BOOL(ge_minimap, true, "Display", "Minimap in the bottom-right corner (mod)");
+REXCVAR_DEFINE_DOUBLE(ge_minimap_range, 1200.0, "Display",
+                      "Minimap range: world units from Bond to the edge (Bond is ~170 tall)")
+    .range(400.0, 4000.0);
+
+namespace {
+constexpr uint32_t kStanRoomCount = 0x82F644C8u;
+constexpr uint32_t kStanRoomTiles = 0x82F644D0u;
+constexpr uint32_t kStanScale = 0x8272D56Cu;
+constexpr uint32_t kStanTileSizes = 0x8272D574u;
+constexpr uint32_t kObjectivePtrs = 0x82F1FC94u;
+constexpr uint32_t kObjectiveLast = 0x82424BB8u;  // objective count - 1
+constexpr uint32_t kSetup = 0x82F303A0u;          // g_CurrentSetup
+
+struct GeMapTile {
+  float minx, maxx, minz, maxz, y;
+  uint32_t first, n;  // into GeMapLevel::pts / wall
+};
+struct GeMapLevel {
+  uint32_t key_count = 0, key_first = 0;
+  float key_scale = 0.f;
+  std::vector<GeMapTile> tiles;
+  std::vector<float> pts;     // x, z
+  std::vector<uint8_t> wall;  // per point: edge to the next point is a wall
+};
+GeMapLevel g_map_level;
+
+std::mutex g_map_mutex;
+GeMinimapView g_map_view;
+std::chrono::steady_clock::time_point g_map_time{};
+uint64_t g_map_frame = ~0ull;
+std::vector<GeMinimapMarker> g_map_markers;
+
+void ge_map_build_level(uint8_t* base) {
+  const uint32_t count = LD32(base, kStanRoomCount);
+  const uint32_t first = (count && count < 1024) ? LD32(base, kStanRoomTiles) : 0u;
+  const float scale = LDF32(base, kStanScale);
+  if (count == g_map_level.key_count && first == g_map_level.key_first &&
+      scale == g_map_level.key_scale) {
+    return;
+  }
+  g_map_level = GeMapLevel{};
+  g_map_level.key_count = count;
+  g_map_level.key_first = first;
+  g_map_level.key_scale = scale;
+  if (!count || count >= 1024 || !(scale > 0.f) || !std::isfinite(scale)) return;
+  const float inv = 1.f / scale;
+  for (uint32_t r = 0; r < count; ++r) {
+    uint32_t tile = LD32(base, kStanRoomTiles + 4u * r);
+    for (int guard = 0; tile && guard < 20000 && ge_readable(base, tile, 8) && LD32(base, tile) != 0;
+         ++guard) {
+      const uint32_t n = LD16(base, tile + 6u) >> 12;
+      const int size = static_cast<int8_t>(base[kStanTileSizes + n]);
+      if (n >= 3 && n <= 12 && ge_readable(base, tile, 8u + 8u * n)) {
+        GeMapTile t{1e30f, -1e30f, 1e30f, -1e30f, 0.f,
+                    static_cast<uint32_t>(g_map_level.pts.size() / 2), n};
+        for (uint32_t i = 0; i < n; ++i) {
+          const uint32_t p = tile + 8u + 8u * i;
+          const float x = static_cast<int16_t>(LD16(base, p)) * inv;
+          const float y = static_cast<int16_t>(LD16(base, p + 2u)) * inv;
+          const float z = static_cast<int16_t>(LD16(base, p + 4u)) * inv;
+          g_map_level.pts.push_back(x);
+          g_map_level.pts.push_back(z);
+          g_map_level.wall.push_back(LD16(base, p + 6u) == 0 ? 1 : 0);
+          t.minx = std::min(t.minx, x);
+          t.maxx = std::max(t.maxx, x);
+          t.minz = std::min(t.minz, z);
+          t.maxz = std::max(t.maxz, z);
+          t.y += y;
+        }
+        t.y /= static_cast<float>(n);
+        g_map_level.tiles.push_back(t);
+      }
+      if (size <= 0) break;
+      tile += static_cast<uint32_t>(size);
+    }
+  }
+  REXKRNL_INFO("GEMAP floor map: {} rooms, {} tiles", count, g_map_level.tiles.size());
+}
+
+bool ge_pad_pos(uint8_t* base, uint32_t pad, float* x, float* y, float* z) {
+  uint32_t addr = 0;
+  if (pad < 10000u) {
+    const uint32_t arr = LD32(base, kSetup + 24u);
+    if (arr) addr = arr + pad * 44u;
+  } else {
+    const uint32_t arr = LD32(base, kSetup + 28u);
+    if (arr) addr = arr + (pad - 10000u) * 68u;
+  }
+  if (!ge_readable(base, addr, 12)) return false;
+  *x = LDF32(base, addr);
+  *y = LDF32(base, addr + 4u);
+  *z = LDF32(base, addr + 8u);
+  return std::isfinite(*x) && std::isfinite(*z);
+}
+
+void ge_map_scan(PPCContext* ctx, uint8_t* base, uint32_t player, float feet,
+                 std::vector<GeMinimapMarker>* out) {
+  out->clear();
+  const PPCContext saved = *ctx;
+  const uint32_t sp = ge_scratch_sp(saved);
+  const uint32_t rooms = sp + 0x200u, bounds = sp + 0x400u;
+  const uint32_t count = std::min<uint32_t>(LD32(base, kStanRoomCount), 1023u);
+  const uint32_t self = LD32(base, player + kOffProp);
+  std::unordered_set<uint32_t> seen;
+
+  for (uint32_t r0 = 0; r0 < count; r0 += 4) {
+    const uint32_t n = std::min<uint32_t>(4u, count - r0);
+    for (uint32_t i = 0; i < n; ++i) ST32(base, rooms + 4u * i, r0 + i);
+    ST32(base, rooms + 4u * n, 0xFFFFFFFFu);
+    ctx->r1.u32 = sp;
+    ctx->r3.u32 = rooms;
+    sub_820CEF38(*ctx, base);  // roomGetProps
+    uint32_t ids = LD32(base, kPropListPtr);
+    if (!ge_readable(base, ids, 2)) ids = 0;
+    for (uint32_t k = 0; ids && k < 256; ++k) {
+      const int16_t id = static_cast<int16_t>(LD16(base, ids + 2u * k));
+      if (id < 0) break;
+      const uint32_t prop = kProps + static_cast<uint32_t>(id) * 0x50u;
+      if (prop == self || !seen.insert(prop).second) continue;
+      const float x = LDF32(base, prop + 12u), y = LDF32(base, prop + 16u),
+                  z = LDF32(base, prop + 20u);
+      if (!std::isfinite(x) || !std::isfinite(z) || std::fabs(y - feet) > 600.f) continue;
+      const uint8_t type = base[prop];
+      if (type == 3) {  // guard: only while it still has collision (alive)
+        ST32(base, bounds, 0);
+        ST32(base, bounds + 4u, 0);
+        ctx->r3.u32 = prop;
+        ctx->r4.u32 = bounds;
+        ctx->r5.u32 = bounds + 4u;
+        ctx->r6.u32 = bounds + 8u;
+        ctx->r7.u32 = bounds + 12u;
+        sub_820CDF80(*ctx, base);
+        if (LD32(base, bounds) && static_cast<int32_t>(LD32(base, bounds + 4u)) >= 3) {
+          out->push_back({x, z, kGeMapEnemy});
+        }
+      } else if (type == 4) {  // a dropped weapon
+        out->push_back({x, z, kGeMapItem});
+      } else if (type == 1) {
+        const uint32_t obj = LD32(base, prop + 8u);
+        if (!ge_readable(base, obj, 4)) continue;
+        const uint8_t ot = base[obj + 3u];
+        if (ot == 4 || ot == 8 || ot == 0x15) out->push_back({x, z, kGeMapItem});   // key, weapon, armour
+        else if (ot == 7 || ot == 0x14) out->push_back({x, z, kGeMapAmmo});         // magazine, ammo box
+      }
+    }
+  }
+
+  // Next objective: the first incomplete one for this difficulty with
+  // something on the map to point at.
+  ctx->r1.u32 = sp;
+  sub_8209F598(*ctx, base);  // lvlGetSelectedDifficulty
+  const int difficulty = static_cast<int32_t>(ctx->r3.u32);
+  const int last = static_cast<int32_t>(LD32(base, kObjectiveLast));
+  for (int i = 0; i <= last && i < 10; ++i) {
+    uint32_t e = LD32(base, kObjectivePtrs + 4u * static_cast<uint32_t>(i));
+    if (!ge_readable(base, e, 16) || static_cast<int8_t>(base[e + 15u]) > difficulty) continue;
+    ctx->r1.u32 = sp;
+    ctx->r3.u32 = static_cast<uint32_t>(i);
+    sub_820CC0D0(*ctx, base);  // objective status: 0 incomplete, 1 complete, 2 failed
+    if (ctx->r3.u32 != 0) continue;
+    const size_t before = out->size();
+    for (int guard = 0; guard < 64 && ge_readable(base, e, 16) && base[e + 3u] != 24; ++guard) {
+      const uint8_t t = base[e + 3u];
+      float x = 0.f, y = 0.f, z = 0.f;
+      if (t == 25 || t == 28 || (t == 30 && LD32(base, e + 8u) == 0)) {  // destroy/collect/photo
+        ctx->r1.u32 = sp;
+        ctx->r3.u32 = LD32(base, e + 4u);
+        sub_820CBF58(*ctx, base);  // objFindByTagId
+        const uint32_t obj = ctx->r3.u32;
+        const uint32_t prop = ge_readable(base, obj, 20) ? LD32(base, obj + 16u) : 0u;
+        if (ge_readable(base, prop, 24)) out->push_back({LDF32(base, prop + 12u), LDF32(base, prop + 20u), kGeMapObjective});
+      } else if (t == 32 && LD32(base, e + 8u) == 0) {  // enter room
+        if (ge_pad_pos(base, LD32(base, e + 4u), &x, &y, &z)) out->push_back({x, z, kGeMapObjective});
+      } else if (t == 33 && LD32(base, e + 12u) == 0) {  // deposit in room
+        if (ge_pad_pos(base, LD32(base, e + 8u), &x, &y, &z)) out->push_back({x, z, kGeMapObjective});
+      }
+      ctx->r1.u32 = sp;
+      ctx->r3.u32 = e;
+      sub_820D0010(*ctx, base);  // entry size, words
+      const uint32_t words = ctx->r3.u32;
+      if (words == 0 || words > 64) break;
+      e += 4u * words;
+    }
+    if (out->size() > before) break;
+  }
+  *ctx = saved;
+}
+
+void ge_map_update(PPCContext* ctx, uint8_t* base, uint32_t player) {
+  if (!REXCVAR_GET(ge_minimap)) return;
+  if (LD32(base, GE_PAUSE_FLAG) != 0 || LD32(base, player + GE_OFF_DISABLED) != 0 ||
+      LD32(base, player + GE_OFF_WATCH) != 0) {
+    return;  // stale snapshot -> hidden
+  }
+  const uint64_t frame = g_ge_frame.load(std::memory_order_relaxed);
+  if (frame == g_map_frame) return;
+  g_map_frame = frame;
+  ge_map_build_level(base);
+
+  const float bx = LDF32(base, player + kOffPosX), bz = LDF32(base, player + kOffPosZ);
+  const float feet = LDF32(base, player + kOffFeet);
+  if ((frame % 4u) == 0u) ge_map_scan(ctx, base, player, feet, &g_map_markers);
+
+  GeMinimapView v;
+  v.bx = bx;
+  v.bz = bz;
+  v.theta = LDF32(base, player + kOffTheta);
+  v.range = static_cast<float>(REXCVAR_GET(ge_minimap_range));
+  const float reach = v.range * 1.45f;
+  const GeMapLevel& L = g_map_level;
+  for (const GeMapTile& t : L.tiles) {
+    if (t.maxx < bx - reach || t.minx > bx + reach || t.maxz < bz - reach || t.minz > bz + reach)
+      continue;
+    if (t.y < feet - 110.f || t.y > feet + 130.f) continue;  // this floor only
+    v.floors.push_back(static_cast<float>(t.n));
+    for (uint32_t i = 0; i < t.n; ++i) {
+      v.floors.push_back(L.pts[2u * (t.first + i)]);
+      v.floors.push_back(L.pts[2u * (t.first + i) + 1u]);
+    }
+    for (uint32_t i = 0; i < t.n; ++i) {
+      if (!L.wall[t.first + i]) continue;
+      const uint32_t j = (i + 1u) % t.n;
+      v.walls.push_back(L.pts[2u * (t.first + i)]);
+      v.walls.push_back(L.pts[2u * (t.first + i) + 1u]);
+      v.walls.push_back(L.pts[2u * (t.first + j)]);
+      v.walls.push_back(L.pts[2u * (t.first + j) + 1u]);
+    }
+  }
+  v.markers = g_map_markers;
+  std::lock_guard<std::mutex> lock(g_map_mutex);
+  g_map_view = std::move(v);
+  g_map_time = std::chrono::steady_clock::now();
+}
+}  // namespace
+
+bool ge_minimap_get(GeMinimapView* out) {
+  if (!REXCVAR_GET(ge_minimap)) return false;
+  std::lock_guard<std::mutex> lock(g_map_mutex);
+  if (std::chrono::steady_clock::now() - g_map_time > std::chrono::milliseconds(250)) return false;
+  *out = g_map_view;
+  return true;
+}
+
 void ge_jump(PPCRegister& r11) {
   PPCContext* ctx; uint8_t* base; getcb(ctx, base);
   const uint32_t player = r11.u32;
   if (!player) return;
   const int idx = ge_player_index(base, player);
   if (idx < 0) return;
+  if (ge_pad_slot_for_player(base, player) == 0) ge_map_update(ctx, base, player);
 
   // Ground height for custom movement (the game only knows the floor data).
   bool free_move = ge_free_move_on(base, player);

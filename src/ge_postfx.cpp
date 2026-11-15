@@ -8,12 +8,16 @@
 // dedicated shader pass and are intentionally out of scope here.
 
 #include "ge_postfx.h"
+#include "ge_minimap.h"
 
 #include <rex/cvar.h>
 
 #include <imgui.h>
 
+#include <algorithm>
+#include <cmath>
 #include <string>
+#include <vector>
 
 // --- Tunable cvars (category "PostFX"; persisted via the menu's Save) ---
 REXCVAR_DEFINE_BOOL(postfx_enabled, false, "PostFX", "Enable the post-processing filter");
@@ -96,10 +100,160 @@ void ApplyPostFxPreset(int index) {
 
 void ResetPostFx() { ApplyPostFxPreset(0); }
 
+
+// --- Minimap (mod) -----------------------------------------------------------
+// Circular, Bond at the centre facing up; the map turns and slides around him.
+// Data comes from ge_minimap_get (built on the game thread in ge_hooks.cpp).
+namespace {
+
+// Clip a convex polygon (screen space) to a convex polygon `clip` (CCW or
+// CW, consistently) -- Sutherland-Hodgman.
+std::vector<ImVec2> ClipConvex(const std::vector<ImVec2>& poly, const std::vector<ImVec2>& clip) {
+  std::vector<ImVec2> out = poly;
+  // Orientation of the clip polygon.
+  float area = 0.f;
+  for (size_t i = 0; i < clip.size(); ++i) {
+    const ImVec2& a = clip[i];
+    const ImVec2& b = clip[(i + 1) % clip.size()];
+    area += a.x * b.y - b.x * a.y;
+  }
+  const float sgn = area >= 0.f ? 1.f : -1.f;
+  for (size_t e = 0; e < clip.size() && !out.empty(); ++e) {
+    const ImVec2 a = clip[e], b = clip[(e + 1) % clip.size()];
+    auto inside = [&](const ImVec2& p) {
+      return sgn * ((b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x)) >= 0.f;
+    };
+    std::vector<ImVec2> in = std::move(out);
+    out.clear();
+    for (size_t i = 0; i < in.size(); ++i) {
+      const ImVec2 p = in[i], q = in[(i + 1) % in.size()];
+      const bool pin = inside(p), qin = inside(q);
+      if (pin) out.push_back(p);
+      if (pin != qin) {
+        const float d1 = (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x);
+        const float d2 = (b.x - a.x) * (q.y - a.y) - (b.y - a.y) * (q.x - a.x);
+        const float t = d1 / (d1 - d2);
+        out.push_back(ImVec2(p.x + (q.x - p.x) * t, p.y + (q.y - p.y) * t));
+      }
+    }
+  }
+  return out;
+}
+
+// Clip segment p-q to the circle (c, r). False if it misses.
+bool ClipSegment(ImVec2 c, float r, ImVec2* p, ImVec2* q) {
+  const float dx = q->x - p->x, dy = q->y - p->y;
+  const float fx = p->x - c.x, fy = p->y - c.y;
+  const float a = dx * dx + dy * dy;
+  if (a < 1e-6f) return fx * fx + fy * fy <= r * r;
+  const float b = 2.f * (fx * dx + fy * dy);
+  const float cc = fx * fx + fy * fy - r * r;
+  const float disc = b * b - 4.f * a * cc;
+  if (disc < 0.f) return false;
+  const float sq = std::sqrt(disc);
+  float t0 = (-b - sq) / (2.f * a), t1 = (-b + sq) / (2.f * a);
+  if (t1 < 0.f || t0 > 1.f) return false;
+  t0 = std::max(t0, 0.f);
+  t1 = std::min(t1, 1.f);
+  const ImVec2 p0 = *p;
+  *p = ImVec2(p0.x + dx * t0, p0.y + dy * t0);
+  *q = ImVec2(p0.x + dx * t1, p0.y + dy * t1);
+  return true;
+}
+
+void DrawMinimap(const ImGuiIO& io) {
+  GeMinimapView v;
+  if (!::ge_minimap_get(&v)) return;
+  const float W = io.DisplaySize.x, H = io.DisplaySize.y;
+  if (W <= 0.f || H <= 0.f) return;
+  // The game picture is 16:9, centred (bars on the other axis).
+  const float vw = std::min(W, H * 16.f / 9.f), vh = vw * 9.f / 16.f;
+  const float vx1 = (W + vw) * 0.5f, vy1 = (H + vh) * 0.5f;
+  const float R = vh * 0.13f;
+  const ImVec2 c(vx1 - R - vh * 0.035f, vy1 - R - vh * 0.05f);
+
+  const float th = v.theta * 0.017453292f;
+  const float fx = -std::sin(th), fz = std::cos(th);  // forward
+  const float rx = -std::cos(th), rz = -std::sin(th);  // right
+  const float k = R / std::max(v.range, 1.f);
+  auto to_screen = [&](float x, float z) {
+    const float dx = x - v.bx, dz = z - v.bz;
+    return ImVec2(c.x + (dx * rx + dz * rz) * k, c.y - (dx * fx + dz * fz) * k);
+  };
+
+  ImDrawList* dl = ImGui::GetForegroundDrawList();
+  dl->AddCircleFilled(c, R, IM_COL32(8, 10, 14, 150), 64);
+
+  std::vector<ImVec2> circle;
+  for (int i = 0; i < 40; ++i) {
+    const float a = static_cast<float>(i) * 6.2831853f / 40.f;
+    circle.push_back(ImVec2(c.x + std::cos(a) * R, c.y + std::sin(a) * R));
+  }
+
+  // Floors.
+  for (size_t i = 0; i < v.floors.size();) {
+    const int n = static_cast<int>(v.floors[i++]);
+    if (n < 3 || i + 2 * n > v.floors.size()) break;
+    std::vector<ImVec2> poly;
+    for (int j = 0; j < n; ++j) poly.push_back(to_screen(v.floors[i + 2 * j], v.floors[i + 2 * j + 1]));
+    i += 2 * n;
+    std::vector<ImVec2> clipped = ClipConvex(poly, circle);
+    if (clipped.size() >= 3) {
+      dl->AddConvexPolyFilled(clipped.data(), static_cast<int>(clipped.size()),
+                              IM_COL32(70, 78, 88, 150));
+    }
+  }
+  // Walls.
+  for (size_t i = 0; i + 3 < v.walls.size(); i += 4) {
+    ImVec2 p = to_screen(v.walls[i], v.walls[i + 1]), q = to_screen(v.walls[i + 2], v.walls[i + 3]);
+    if (ClipSegment(c, R, &p, &q)) dl->AddLine(p, q, IM_COL32(200, 206, 214, 220), 1.5f);
+  }
+
+  // Markers (objectives stick to the rim when off the map).
+  const float s = std::max(3.f, R * 0.035f);
+  for (const GeMinimapMarker& m : v.markers) {
+    ImVec2 p = to_screen(m.x, m.z);
+    const float dx = p.x - c.x, dy = p.y - c.y, d = std::sqrt(dx * dx + dy * dy);
+    if (d > R - s) {
+      if (m.kind != kGeMapObjective) continue;
+      p = ImVec2(c.x + dx / d * (R - s), c.y + dy / d * (R - s));
+    }
+    switch (m.kind) {
+      case kGeMapEnemy:
+        dl->AddCircleFilled(p, s, IM_COL32(230, 40, 40, 255), 12);
+        break;
+      case kGeMapItem:
+        dl->AddLine(ImVec2(p.x - s, p.y - s), ImVec2(p.x + s, p.y + s), IM_COL32(190, 190, 190, 255), 2.f);
+        dl->AddLine(ImVec2(p.x - s, p.y + s), ImVec2(p.x + s, p.y - s), IM_COL32(190, 190, 190, 255), 2.f);
+        break;
+      case kGeMapAmmo:
+        dl->AddRect(ImVec2(p.x - s, p.y - s), ImVec2(p.x + s, p.y + s), IM_COL32(240, 200, 40, 255), 0.f, 0, 2.f);
+        break;
+      default: {
+        const ImVec2 pts[4] = {ImVec2(p.x, p.y - s * 1.4f), ImVec2(p.x + s * 1.4f, p.y),
+                               ImVec2(p.x, p.y + s * 1.4f), ImVec2(p.x - s * 1.4f, p.y)};
+        dl->AddConvexPolyFilled(pts, 4, IM_COL32(60, 220, 90, 255));
+        break;
+      }
+    }
+  }
+
+  // Bond: an arrow at the centre, pointing the way he faces (always up).
+  const float b = std::max(5.f, R * 0.06f);
+  dl->AddTriangleFilled(ImVec2(c.x, c.y - b * 1.3f), ImVec2(c.x + b * 0.8f, c.y + b * 0.8f),
+                        ImVec2(c.x - b * 0.8f, c.y + b * 0.8f), IM_COL32(255, 255, 255, 255));
+  dl->AddCircle(c, R, IM_COL32(200, 206, 214, 200), 64, 2.f);
+}
+
+}  // namespace
+
 PostFxOverlay::PostFxOverlay(rex::ui::ImGuiDrawer* drawer) : rex::ui::ImGuiDialog(drawer) {}
 PostFxOverlay::~PostFxOverlay() = default;
 
 void PostFxOverlay::OnDraw(ImGuiIO& io) {
+  // Minimap (bottom right), independent of post-FX.
+  DrawMinimap(io);
+
   // Quicksave / quickload message (top centre), independent of post-FX.
   {
     std::string text;
