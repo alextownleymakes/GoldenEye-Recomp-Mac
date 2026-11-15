@@ -28,6 +28,8 @@
 #include <rex/system/ge_savestate.h>  // quicksave / quickload
 #include <chrono>
 #include <cmath>
+#include <algorithm>
+#include <vector>
 #include <filesystem>
 #include <mutex>
 #include <array>
@@ -1410,6 +1412,8 @@ std::array<bool, 4> g_sprint_btn_prev{};
 std::array<std::atomic<int>, 4> g_jump_request{};
 std::array<bool, 4> g_jump_btn_prev{};
 std::array<std::atomic<bool>, 4> g_jump_held{};
+// Frame counter (bumped every input poll) for per-frame caches.
+std::atomic<uint64_t> g_ge_frame{0};
 constexpr int kJumpBufferFrames = 6;
 // While airborne with A held, ledges up to this far above the feet are grabbed.
 constexpr float kAirReach = 45.0f;
@@ -1476,22 +1480,25 @@ REXCVAR_DEFINE_BOOL(ge_sprint_enable, true, "Input",
 REXCVAR_DEFINE_BOOL(ge_sprint_toggle, true, "Input",
                     "Sprint mode: true = press to toggle (turns off when you stop moving), "
                     "false = hold");
-REXCVAR_DEFINE_DOUBLE(ge_sprint_speed, 1.75, "Input",
+REXCVAR_DEFINE_DOUBLE(ge_sprint_speed, 2.0, "Input",
                       "Sprint speed multiplier (normal run 1.0, the game's own full-speed run "
                       "after 3s is 1.25)")
     .range(1.0, 3.0);
 // Jump: a mod, not in the original game. A (Cross on PlayStation, Space on the
 // keyboard) jumps; A still does everything it normally does (doors, menus).
 REXCVAR_DEFINE_BOOL(ge_jump_enable, true, "Input", "A button jumps (mod)");
-REXCVAR_DEFINE_DOUBLE(ge_jump_height, 50.0, "Input",
+REXCVAR_DEFINE_DOUBLE(ge_jump_height, 85.0, "Input",
                       "Jump height in game units (Bond is roughly 170 tall; crouching lowers "
                       "him about 90)")
     .range(10.0, 150.0);
+REXCVAR_DEFINE_BOOL(ge_free_move, true, "Input",
+                    "Free movement (mod): level geometry and objects block Bond instead of the "
+                    "floor data; stand on anything flat");
 REXCVAR_DEFINE_BOOL(ge_mantle_enable, true, "Input",
                     "Jumping at a ledge climbs onto it (mod)");
-REXCVAR_DEFINE_DOUBLE(ge_mantle_reach, 110.0, "Input",
-                      "Highest ledge (above Bond's feet, game units) a jump can mantle onto")
-    .range(40.0, 200.0);
+REXCVAR_DEFINE_DOUBLE(ge_mantle_reach, 100.0, "Input",
+                      "Highest thing a jump can mantle onto, in percent of Bond's height")
+    .range(25.0, 150.0);
 REXCVAR_DEFINE_STRING(ge_key_mv_up, "W", "Input/Keybinds", "Move forward (left stick up)");
 REXCVAR_DEFINE_STRING(ge_key_mv_down, "S", "Input/Keybinds", "Move back (left stick down)");
 REXCVAR_DEFINE_STRING(ge_key_mv_left, "A", "Input/Keybinds", "Move left (left stick left)");
@@ -1642,6 +1649,7 @@ void ge_inject_keyboard(PPCRegister& /*r11*/) {
 
   // Quicksave / quickload first: this is the frame's safe point.
   ge_quickstate_poll();
+  g_ge_frame.fetch_add(1, std::memory_order_relaxed);
 
   // Apply BeanTools community DATA bug-fixes once, before any level loads its
   // setup/fog/BG data. The data segment is live in guest RAM by the first input
@@ -1820,7 +1828,7 @@ void ge_sprint_boost(PPCRegister& f0, PPCRegister& f13) {
 }
 
 // ---------------------------------------------------------------------------
-// JUMP / MANTLE (mod).
+// JUMP / MANTLE / FREE MOVEMENT (mods).
 //
 // Vertical: hooked in Bond's vertical update (sub_820B94C8 = the decomp's
 // bondviewUpdatePlayerY) at 0x820B96A0, just after the ground height under Bond
@@ -1829,24 +1837,32 @@ void ge_sprint_boost(PPCRegister& f0, PPCRegister& f13) {
 //   +0x174 feet height   (decomp field_70)
 //   +0x178 ground height (decomp stanHeight)
 //   +0x180 vertical speed per frame, + = up (decomp field_7C)
-// A jump just gives Bond an upward speed and lifts him a hair off the ground;
-// the game's own falling code carries him up and down with its normal gravity
-// and landing dip.
+// A jump gives Bond an upward speed and lifts him a hair off the ground; the
+// game's own falling code carries him up and down with its normal gravity and
+// landing dip.
 //
-// Mantle: a jump at something in front of Bond whose top is flat and within
-// reach climbs onto it. Two kinds of top:
-//   * Floor in the level's walkable floor data (stan): raised areas, ledges.
-//     Bond is placed on that floor and the game moves him as normal.
-//   * Anything else solid with a flat top (barriers, bunkers, low walls): found
-//     with the level collision mesh bullets use. Those tops aren't part of the
-//     walkable floor data, so while Bond stands on one ("on top"), his ground
-//     height comes from that mesh and his horizontal movement is handled here
-//     instead of by the game's floor-based collision (hook at the entry of
-//     sub_820B82A0 = bondviewCalcUpdatePlayerCollision). Walking off the edge
-//     onto real floor hands him back to the game.
+// What's solid, apart from the game's walkable floor data ("stan"):
+//   * the level collision mesh the XBLA build uses for bullets (ge_ray);
+//   * every object's own collision shape: a footprint polygon plus a top and
+//     bottom height, from the game's chraiGetCollisionBounds (ge_solids).
+//     Desks, crates, drums, doors, glass, guards. Destroyed objects drop out.
+//
+// Mantle: a jump at something in front of Bond with a flat top within reach
+// climbs onto it (floor, a mesh top like a barrier, or an object top).
+//
+// Custom movement replaces the game's floor-based collision (hook at the entry
+// of sub_820B82A0 = bondviewCalcUpdatePlayerCollision) in two cases:
+//   * "On top" (free movement off): Bond is standing on a mesh or object top,
+//     which the floor data knows nothing about. Stepping onto walkable floor
+//     hands him back to the game.
+//   * Free movement (ge_free_move): always. The mesh and objects block him, he
+//     can stand on any flat surface, and he only can't step where there's
+//     nothing below within a long drop. The floor data is still followed in
+//     the background for rooms (what gets drawn) and guards.
 // ---------------------------------------------------------------------------
 namespace {
 constexpr uint32_t kOffFeet = 0x174u, kOffGround = 0x178u, kOffVSpeed = 0x180u;
+constexpr uint32_t kOffProp = 0x1ACu;         // Bond's own prop
 constexpr uint32_t kOffPrevPos = 0x530u;      // decomp bondprevpos
 constexpr uint32_t kOffTile = 0x5B0u;         // field_488.current_tile_ptr
 constexpr uint32_t kOffPosX = 0x5B4u, kOffPosY = 0x5B8u, kOffPosZ = 0x5BCu;
@@ -1854,24 +1870,43 @@ constexpr uint32_t kOffRadius = 0x5D8u;       // field_488.collision_radius
 constexpr uint32_t kOffTheta = 0x254u;        // vv_theta, degrees
 constexpr uint32_t kOffAutoCrouch = 8316u;    // autocrouchpos
 constexpr uint32_t kOffSpecialTile = 8428u;   // decomp field_2A6C (tile swap in progress)
+constexpr uint32_t kTankIn = 0x82F1F8D4u;     // g_PlayerIsInTank
+constexpr uint32_t kTankWorld = 0x82F1F8D8u;  // g_WorldTankProp
+constexpr uint32_t kProps = 0x82F1FCF0u;      // g_Props, 0x50 bytes each
+constexpr uint32_t kPropListPtr = 0x82F2F700u;  // -> s16 prop indices (roomGetProps output)
+constexpr uint32_t kCdTypes = 0x1Fu;          // objs|doors|players|chrs|pathblocker (Bond's)
 constexpr float kGravity = 0.27777779f;       // bondviewUpdatePlayerY's gravity, /frame^2
 constexpr float kStep = 30.0f;                // the game's step-up height (always_30)
 constexpr float kKnee = kStep + 6.0f;         // wall-test heights above the feet
 constexpr float kChest = 90.0f;
+constexpr float kBody = 150.0f;               // objects lower than this above the feet block
 constexpr float kHeadroom = 150.0f;           // clear space needed above a top
+constexpr float kMaxDrop = 800.0f;            // free movement: no stepping into a deeper drop
+constexpr float kFloorBias = 10.0f;           // mesh must beat the floor data by this to count
+
+
+bool ge_free_move_on(uint8_t* base, uint32_t player) {
+  return REXCVAR_GET(ge_free_move) && LD32(base, kTankIn) != 1 && LD32(base, kTankWorld) == 0 &&
+         LD32(base, player + kOffSpecialTile) == 0 && LD32(base, player + GE_OFF_DISABLED) == 0;
+}
 
 // Mantle in progress, per player index: rising toward a top, placed on it once
 // the feet clear it.
+enum class GeTopKind { kFloor, kMesh, kObject };
 struct GeMantle {
   bool active = false;
-  bool mesh_top = false;  // true = a collision-mesh top (not walkable floor)
+  GeTopKind kind = GeTopKind::kFloor;
   uint32_t player = 0, tile = 0;
   float x = 0.f, z = 0.f, top = 0.f;
+  bool vault = false;   // going over (railing etc.): top = clearance, land on land_y
+  float land_y = 0.f;
+  bool climb = false;   // tall: a steady climb with a head nod instead of a hop
+  float start = 0.f, rate = 0.f, nod = 0.f;
   int frames = 0;
 };
 std::array<GeMantle, 4> g_mantle{};
 
-// Standing on a collision-mesh top, per player index.
+// Standing on a mesh/object top with free movement off, per player index.
 struct GeOnTop {
   bool active = false;
   uint32_t player = 0;
@@ -1886,9 +1921,16 @@ int ge_player_index(uint8_t* base, uint32_t player) {
   return -1;
 }
 
+// Bond's standing height: eye height (player+0x203C, the decomp's eyeheight)
+// plus the top of his head.
+float ge_bond_height(uint8_t* base, uint32_t player) {
+  const float h = LDF32(base, player + 0x203Cu) + 10.f;
+  return (h > 60.f && h < 400.f) ? h : 170.f;
+}
+
 // Guest scratch stack for calling game functions from a hook: well below the
 // current frame. Every helper saves and restores the whole guest context.
-inline uint32_t ge_scratch_sp(const PPCContext& c) { return (c.r1.u32 - 0x800u) & ~0xFu; }
+inline uint32_t ge_scratch_sp(const PPCContext& c) { return (c.r1.u32 - 0x1000u) & ~0xFu; }
 
 // The game's own stanFindTileBelowPos (sub_821117B0): the highest walkable floor
 // tile under (x, y, z), or 0. *top = that floor's height there.
@@ -1912,6 +1954,31 @@ uint32_t ge_find_floor_below(PPCContext* ctx, uint8_t* base, float x, float y, f
   return tile;
 }
 
+// Height of a floor tile's plane at (x, z): the game's stanGetPositionYValue
+// (sub_821108B0).
+float ge_tile_height(PPCContext* ctx, uint8_t* base, uint32_t tile, float x, float z) {
+  const PPCContext saved = *ctx;
+  ctx->r1.u32 = ge_scratch_sp(saved);
+  ctx->r3.u32 = tile;
+  ctx->f1.f64 = x;
+  ctx->f2.f64 = z;
+  sub_821108B0(*ctx, base);
+  const float y = static_cast<float>(ctx->f1.f64);
+  *ctx = saved;
+  return y;
+}
+
+// Ladders in GoldenEye are floor tiles far steeper than any stairs (rising 15
+// to 30 units per unit across). Is this tile one?
+bool ge_is_ladder_tile(PPCContext* ctx, uint8_t* base, uint32_t tile, float x, float z) {
+  if (!tile) return false;
+  const float y0 = ge_tile_height(ctx, base, tile, x, z);
+  const float gx = ge_tile_height(ctx, base, tile, x + 4.f, z) - y0;
+  const float gz = ge_tile_height(ctx, base, tile, x, z + 4.f) - y0;
+  const float slope = std::sqrt(gx * gx + gz * gz) / 4.f;
+  return std::isfinite(slope) && slope > 2.0f;
+}
+
 // Ray test against the level collision mesh, the one the XBLA build uses for
 // bullets (sub_8209C058, called the same way sub_820D65E0 does): mesh =
 // sub_821131A8(flag @0x82F0DF11); mesh units = world / K, K = sub_821130E0()
@@ -1931,7 +1998,7 @@ bool ge_ray(PPCContext* ctx, uint8_t* base, float fx, float fy, float fz, float 
     static bool logged = false;
     if (!logged) {
       logged = true;
-      REXKRNL_INFO("GEMANTLE collision scale unusable ({}); object mantling off", K);
+      REXKRNL_INFO("GEMANTLE collision scale unusable ({}); mesh tests off", K);
     }
     *ctx = saved;
     return false;
@@ -1944,14 +2011,14 @@ bool ge_ray(PPCContext* ctx, uint8_t* base, float fx, float fy, float fz, float 
     *ctx = saved;
     return false;
   }
-  const uint32_t vf = sp + 0x100u, vt = sp + 0x110u, vh = sp + 0x120u, vn = sp + 0x130u;
+  const uint32_t vf = sp + 0x100u, vh = sp + 0x120u, vn = sp + 0x130u;
   const float in[8] = {fx * inv, fy * inv, fz * inv, 0.f, tx * inv, ty * inv, tz * inv, 0.f};
-  for (int i = 0; i < 8; ++i) STF32(base, vf + 4u * i, in[i]);
-  for (int i = 0; i < 8; ++i) STF32(base, vh + 4u * i, 0.f);
+  for (uint32_t i = 0; i < 8; ++i) STF32(base, vf + 4u * i, in[i]);
+  for (uint32_t i = 0; i < 8; ++i) STF32(base, vh + 4u * i, 0.f);
   ST32(base, sp + 84u, 0u);  // 9th argument: optional output, none
   ctx->r3.u32 = mesh;
   ctx->r4.u32 = vf;
-  ctx->r5.u32 = vt;
+  ctx->r5.u32 = vf + 0x10u;
   ctx->r6.u32 = 0;
   ctx->r7.u32 = vh;
   ctx->r8.u32 = vn;
@@ -1979,35 +2046,258 @@ bool ge_ray(PPCContext* ctx, uint8_t* base, float fx, float fy, float fz, float 
   return ok && std::isfinite(hit->y);
 }
 
-// Highest flat-enough solid surface under (x, z) between y_from and y_to.
-bool ge_ground_below(PPCContext* ctx, uint8_t* base, float x, float z, float y_from, float y_to,
-                     float* y) {
+// Highest flat-enough mesh surface under (x, z) between y_from and y_to.
+bool ge_mesh_ground(PPCContext* ctx, uint8_t* base, float x, float z, float y_from, float y_to,
+                    float* y, float* steep_y = nullptr) {
   GeRayHit h{};
   if (!ge_ray(ctx, base, x, y_from, z, x, y_to, z, &h)) return false;
-  if (h.ny < 0.7f) return false;  // too steep to stand on
+  if (h.ny < 0.7f) {  // too steep to stand on
+    if (steep_y) *steep_y = h.y;
+    return false;
+  }
   *y = h.y;
   return true;
 }
 
-// Can Bond fit at (x, z) standing at height `top`: nothing solid in the
-// space above it.
+// Can Bond fit at (x, z) standing at height `top`: no mesh in the space above.
 bool ge_headroom(PPCContext* ctx, uint8_t* base, float x, float z, float top) {
   GeRayHit h{};
   return !ge_ray(ctx, base, x, top + 5.f, z, x, top + kHeadroom, z, &h);
 }
 
-// Is the straight path from (ax, az) to (bx, bz) at height y blocked?
-bool ge_blocked(PPCContext* ctx, uint8_t* base, float ax, float az, float bx, float bz, float y,
-                GeRayHit* h) {
-  return ge_ray(ctx, base, ax, y, az, bx, y, bz, h);
+// Is the straight path from (ax, az) to (bx, bz) at height y blocked by a wall?
+// An upward-facing surface (a slope or a top) isn't a wall: whether he can
+// stand on it is the ground test's job.
+GeRayHit g_last_wall{};
+bool ge_blocked(PPCContext* ctx, uint8_t* base, float ax, float az, float bx, float bz, float y) {
+  GeRayHit h{};
+  if (!ge_ray(ctx, base, ax, y, az, bx, y, bz, &h)) return false;
+  if (h.ny >= 0.7f) return false;
+  g_last_wall = h;
+  return true;
 }
 
+// ---- Objects --------------------------------------------------------------
+struct GeSolid {
+  uint32_t prop = 0;
+  uint8_t type = 0;  // 1 obj, 2 door, 3 chr, 6 player
+  float top = 0.f, bottom = 0.f;
+  int n = 0;
+  float px[12]{}, pz[12]{};
+};
+struct GeSolidCache {
+  uint32_t player = 0;
+  uint64_t frame = ~0ull;
+  std::vector<GeSolid> list;
+};
+std::array<GeSolidCache, 4> g_solids{};
+
+// Every collidable object near Bond (props in the currently visible rooms,
+// filtered with Bond's own collision types), with its collision shape.
+const std::vector<GeSolid>& ge_solids(PPCContext* ctx, uint8_t* base, uint32_t player, int idx) {
+  GeSolidCache& c = g_solids[idx];
+  const uint64_t frame = g_ge_frame.load(std::memory_order_relaxed);
+  if (c.player == player && c.frame == frame) return c.list;
+  c.player = player;
+  c.frame = frame;
+  c.list.clear();
+
+  const PPCContext saved = *ctx;
+  const uint32_t sp = ge_scratch_sp(saved);
+  const uint32_t rooms = sp + 0x200u;  // up to 100 s32 + terminator
+  const uint32_t out = sp + 0x400u;    // poly ptr, edges, top, bottom
+  // Rooms to look in: the room of Bond's floor tile first (always right, even
+  // if nothing has been drawn yet this frame), then every visible room.
+  ctx->r1.u32 = sp;
+  uint32_t nrooms = 0;
+  const uint32_t tile = LD32(base, player + kOffTile);
+  int own_room = -1;
+  if (tile) {
+    own_room = base[tile + 3u];
+    ST32(base, rooms, static_cast<uint32_t>(own_room));
+    nrooms = 1;
+  }
+  ctx->r3.u32 = rooms + 4u * nrooms;
+  ctx->r4.u32 = 98;
+  sub_82113740(*ctx, base);  // bgCopyVisibleRoomsToList
+  int nvis = static_cast<int>(ctx->r3.u32);
+  if (nvis < 0) nvis = 0;
+  if (nvis > 98) nvis = 98;
+  // Drop a repeat of Bond's own room.
+  for (int i = 0; i < nvis; ++i) {
+    const uint32_t r = LD32(base, rooms + 4u * (nrooms + i));
+    if (static_cast<int>(r) == own_room) continue;
+    ST32(base, rooms + 4u * nrooms, r);
+    ++nrooms;
+  }
+  ST32(base, rooms + 4u * nrooms, 0xFFFFFFFFu);
+  ctx->r3.u32 = rooms;
+  sub_820CEF38(*ctx, base);  // roomGetProps -> s16 list, < 0 ends
+  const uint32_t ids = LD32(base, kPropListPtr);
+  const uint32_t self = LD32(base, player + kOffProp);
+  for (uint32_t k = 0; ids && k < 512; ++k) {
+    const int16_t id = static_cast<int16_t>(LD16(base, ids + 2u * k));
+    if (id < 0) break;
+    const uint32_t prop = kProps + static_cast<uint32_t>(id) * 0x50u;
+    if (prop == self) continue;
+    ctx->r3.u32 = prop;
+    ctx->r4.u32 = kCdTypes;
+    sub_820CE830(*ctx, base);  // propIsOfCdType
+    if (ctx->r3.u32 == 0) continue;
+    ST32(base, out, 0);
+    ST32(base, out + 4, 0);
+    STF32(base, out + 8, 0.f);
+    STF32(base, out + 12, 0.f);
+    ctx->r3.u32 = prop;
+    ctx->r4.u32 = out;
+    ctx->r5.u32 = out + 4;
+    ctx->r6.u32 = out + 8;
+    ctx->r7.u32 = out + 12;
+    sub_820CDF80(*ctx, base);  // chraiGetCollisionBounds
+    const uint32_t poly = LD32(base, out);
+    int n = static_cast<int>(LD32(base, out + 4));
+    if (!poly || n < 3) continue;
+    if (n > 12) n = 12;
+    GeSolid s;
+    s.prop = prop;
+    s.type = base[prop];
+    s.top = LDF32(base, out + 8);
+    s.bottom = LDF32(base, out + 12);
+    s.n = n;
+    for (int i = 0; i < n; ++i) {
+      s.px[i] = LDF32(base, poly + 8u * i);
+      s.pz[i] = LDF32(base, poly + 8u * i + 4u);
+    }
+    if (std::isfinite(s.top) && std::isfinite(s.bottom)) c.list.push_back(s);
+  }
+  *ctx = saved;
+  return c.list;
+}
+
+// Inside a convex polygon (either winding)?
+bool ge_in_poly(const GeSolid& s, float x, float z) {
+  int sign = 0;
+  for (int i = 0; i < s.n; ++i) {
+    const int j = (i + 1) % s.n;
+    const float c = (s.px[j] - s.px[i]) * (z - s.pz[i]) - (x - s.px[i]) * (s.pz[j] - s.pz[i]);
+    const int sg = c > 0.f ? 1 : (c < 0.f ? -1 : 0);
+    if (sg == 0) continue;
+    if (sign == 0) sign = sg;
+    else if (sg != sign) return false;
+  }
+  return true;
+}
+
+float ge_poly_dist(const GeSolid& s, float x, float z) {
+  if (ge_in_poly(s, x, z)) return 0.f;
+  float best = 1.0e30f;
+  for (int i = 0; i < s.n; ++i) {
+    const int j = (i + 1) % s.n;
+    const float ex = s.px[j] - s.px[i], ez = s.pz[j] - s.pz[i];
+    const float l2 = ex * ex + ez * ez;
+    float t = l2 > 0.f ? ((x - s.px[i]) * ex + (z - s.pz[i]) * ez) / l2 : 0.f;
+    t = std::clamp(t, 0.f, 1.f);
+    const float dx = s.px[i] + ex * t - x, dz = s.pz[i] + ez * t - z;
+    best = std::min(best, std::sqrt(dx * dx + dz * dz));
+  }
+  return best;
+}
+
+// Highest object top under (x, z) within [y_min, y_max] (objects only, not
+// doors, guards or players).
+bool ge_object_ground(const std::vector<GeSolid>& solids, float x, float z, float y_min,
+                      float y_max, float* y) {
+  bool found = false;
+  for (const GeSolid& s : solids) {
+    if (s.type != 1 || s.top < y_min || s.top > y_max) continue;
+    if (!ge_in_poly(s, x, z)) continue;
+    if (!found || s.top > *y) *y = s.top;
+    found = true;
+  }
+  return found;
+}
+
+// Would Bond's body at (x, z) with feet at `feet` overlap an object? Objects he
+// already overlaps at (cx, cz) only block moves that go further in.
+bool ge_object_blocks(const std::vector<GeSolid>& solids, float cx, float cz, float x, float z,
+                      float feet, float radius) {
+  for (const GeSolid& s : solids) {
+    if (s.top <= feet + kStep || s.bottom >= feet + kBody) continue;  // stepped over / overhead
+    const float d = ge_poly_dist(s, x, z);
+    if (d >= radius) continue;
+    const float d0 = ge_poly_dist(s, cx, cz);
+    if (d0 < radius && d >= d0) continue;  // already overlapping: let him move out
+    return true;
+  }
+  return false;
+}
+
+// Would Bond's body at (x, z), feet at `feet`, overlap any object at all?
+bool ge_object_overlaps(const std::vector<GeSolid>& solids, float x, float z, float feet,
+                        float radius) {
+  for (const GeSolid& s : solids) {
+    if (s.top <= feet + kStep || s.bottom >= feet + kBody) continue;
+    if (ge_poly_dist(s, x, z) < radius) return true;
+  }
+  return false;
+}
+
+// ---- Ground ---------------------------------------------------------------
+struct GeGround {
+  bool found = false;
+  float y = -1.0e30f;
+  GeTopKind kind = GeTopKind::kFloor;
+  uint32_t tile = 0;     // walkable floor tile under the point (rooms), if any
+  float tile_y = -1.0e30f;
+};
+
+// What Bond would stand on at (x, z): the highest of walkable floor, a flat
+// mesh surface and an object top, from `y_from` down to `y_to`. The floor data
+// wins unless the mesh is clearly above it (so stairs keep the game's ramps).
+GeGround ge_ground_at(PPCContext* ctx, uint8_t* base, const std::vector<GeSolid>& solids, float x,
+                      float z, float y_from, float y_to) {
+  GeGround g;
+  float tile_y = 0.f;
+  g.tile = ge_find_floor_below(ctx, base, x, y_from, z, &tile_y);
+  if (g.tile && tile_y >= y_to) {
+    g.tile_y = tile_y;
+    g.found = true;
+    g.y = tile_y;
+    g.kind = GeTopKind::kFloor;
+  } else if (g.tile) {
+    g.tile_y = tile_y;  // floor far below: still the room
+  }
+  float mesh_y = 0.f, steep_y = -1.0e30f;
+  if (ge_mesh_ground(ctx, base, x, z, y_from, y_to, &mesh_y, &steep_y)) {
+    if (!g.found || mesh_y > g.y + kFloorBias) {
+      g.found = true;
+      g.y = mesh_y;
+      g.kind = GeTopKind::kMesh;
+    }
+  } else if (steep_y > -1.0e29f && (!g.found || steep_y > g.y + kFloorBias)) {
+    // The first thing below is a steep surface well above any floor here:
+    // the spot is inside or on the side of something solid (e.g. the sloped
+    // side of a barrier, over floor data hidden under it). Not standable.
+    g.found = false;
+    g.y = -1.0e30f;
+  }
+  float obj_y = 0.f;
+  if (ge_object_ground(solids, x, z, y_to, y_from, &obj_y) && (!g.found || obj_y > g.y)) {
+    g.found = true;
+    g.y = obj_y;
+    g.kind = GeTopKind::kObject;
+  }
+  return g;
+}
+
+// ---- Mantle ---------------------------------------------------------------
 // Look for something Bond can mantle onto in front of him whose top lies
 // between min_top and max_top. Probes forward from his collision circle; the
 // first top found is the front edge, and Bond is placed a little past it where
 // the same flat top continues, with headroom and a clear path over the edge.
-bool ge_find_ledge(PPCContext* ctx, uint8_t* base, uint32_t player, float min_top,
+bool ge_find_ledge(PPCContext* ctx, uint8_t* base, uint32_t player, int idx, float min_top,
                    float max_top, GeMantle* m) {
+  const auto& solids = ge_solids(ctx, base, player, idx);
   const float px = LDF32(base, player + kOffPosX);
   const float pz = LDF32(base, player + kOffPosZ);
   float radius = LDF32(base, player + kOffRadius);
@@ -2016,44 +2306,36 @@ bool ge_find_ledge(PPCContext* ctx, uint8_t* base, uint32_t player, float min_to
   const float fx = -std::sin(theta), fz = std::cos(theta);  // theta_transform
 
   for (float d = radius + 4.f; d <= radius + 40.f; d += 6.f) {
-    const float ex = px + fx * d, ez = pz + fz * d;
-
-    // What's the top at the edge point: walkable floor, or a mesh top?
-    float floor_top = -1.0e30f, mesh_top = -1.0e30f;
-    const bool has_floor = ge_find_floor_below(ctx, base, ex, max_top, ez, &floor_top) != 0 &&
-                           floor_top >= min_top && floor_top <= max_top;
-    const bool has_mesh = ge_ground_below(ctx, base, ex, ez, max_top + 1.f, min_top - 1.f,
-                                          &mesh_top) &&
-                          mesh_top >= min_top && mesh_top <= max_top;
-    if (!has_floor && !has_mesh) continue;
-    const bool use_floor = has_floor && (!has_mesh || floor_top >= mesh_top - 2.f);
-    const float edge_top = use_floor ? floor_top : mesh_top;
+    const GeGround e =
+        ge_ground_at(ctx, base, solids, px + fx * d, pz + fz * d, max_top + 1.f, min_top - 1.f);
+    if (!e.found || e.y < min_top || e.y > max_top) continue;
 
     // Where he'd stand: a body-width in if the top is that deep, else less.
     const float steps[] = {radius + 4.f, radius * 0.5f, 4.f};
     for (float in : steps) {
       const float sd = d + in;
       const float sx = px + fx * sd, sz = pz + fz * sd;
-      float stand_top = 0.f;
-      uint32_t tile = 0;
-      if (use_floor) {
-        tile = ge_find_floor_below(ctx, base, sx, max_top, sz, &stand_top);
-        if (!tile) continue;
-      } else if (!ge_ground_below(ctx, base, sx, sz, max_top + 1.f, edge_top - 20.f,
-                                  &stand_top)) {
-        continue;
-      }
-      if (std::fabs(stand_top - edge_top) > 8.f) continue;
+      const GeGround s = ge_ground_at(ctx, base, solids, sx, sz, max_top + 1.f, e.y - 20.f);
+      if (!s.found || std::fabs(s.y - e.y) > 8.f) continue;
       // Clear path over the edge and room to stand.
-      GeRayHit h{};
-      if (ge_blocked(ctx, base, px, pz, sx + fx * radius, sz + fz * radius, stand_top + 20.f, &h))
+      if (ge_blocked(ctx, base, px, pz, sx + fx * radius, sz + fz * radius, s.y + 20.f))
         return false;
-      if (!ge_headroom(ctx, base, sx, sz, stand_top)) return false;
-      m->mesh_top = !use_floor;
-      m->tile = tile;
+      if (!ge_headroom(ctx, base, sx, sz, s.y)) return false;
+      // Room to stand: nothing within most of a body-width around the spot.
+      {
+        const float r = radius * 0.8f, y = s.y + kKnee;
+        if (ge_blocked(ctx, base, sx, sz, sx + fx * r, sz + fz * r, y) ||
+            ge_blocked(ctx, base, sx, sz, sx - fz * r, sz + fx * r, y) ||
+            ge_blocked(ctx, base, sx, sz, sx + fz * r, sz - fx * r, y)) {
+          continue;
+        }
+      }
+      m->kind = s.kind;
+      m->tile = s.tile;
       m->x = sx;
       m->z = sz;
-      m->top = stand_top;
+      m->top = s.y;
+      m->vault = false;
       return true;
     }
     return false;  // there's a top here but nowhere to stand on it
@@ -2061,27 +2343,140 @@ bool ge_find_ledge(PPCContext* ctx, uint8_t* base, uint32_t player, float min_to
   return false;
 }
 
+// Anything solid (any slope) under (x, z) between y_from and y_to.
+bool ge_mesh_top_any(PPCContext* ctx, uint8_t* base, float x, float z, float y_from, float y_to,
+                     float* y) {
+  GeRayHit h{};
+  if (!ge_ray(ctx, base, x, y_from, z, x, y_to, z, &h)) return false;
+  *y = h.y;
+  return true;
+}
+
+// Distance ahead (along fx, fz) to the first mesh obstacle at height y, or -1.
+float ge_obstacle_ahead(PPCContext* ctx, uint8_t* base, float px, float pz, float fx, float fz,
+                        float y, float range) {
+  GeRayHit h{};
+  if (!ge_ray(ctx, base, px, y, pz, px + fx * range, y, pz + fz * range, &h)) return -1.f;
+  return std::sqrt((h.x - px) * (h.x - px) + (h.z - pz) * (h.z - pz));
+}
+
+// Vault: something in front with no top to stand on (a railing, a thin wall)
+// whose top is within reach and with somewhere to land beyond it. Bond rises
+// to just above it and is set down past it, a body-width clear, then drops to
+// the ground there with the game's own falling.
+bool ge_find_vault(PPCContext* ctx, uint8_t* base, uint32_t player, int idx, float max_top,
+                   GeMantle* m) {
+  const auto& solids = ge_solids(ctx, base, player, idx);
+  const float px = LDF32(base, player + kOffPosX);
+  const float pz = LDF32(base, player + kOffPosZ);
+  const float feet = LDF32(base, player + kOffFeet);
+  float radius = LDF32(base, player + kOffRadius);
+  if (!(radius > 5.f && radius < 80.f)) radius = 30.f;
+  const float theta = LDF32(base, player + kOffTheta) * 0.017453292f;
+  const float fx = -std::sin(theta), fz = std::cos(theta);
+  const bool free_move = ge_free_move_on(base, player);
+
+  const float d = ge_obstacle_ahead(ctx, base, px, pz, fx, fz, feet + kKnee, radius + 50.f);
+  if (d < 0.f) return false;
+  // Its top, just past the face we hit.
+  float top = -1.0e30f;
+  bool any = false;
+  for (float t = d + 1.f; t <= d + 13.f; t += 4.f) {
+    float y = 0.f;
+    if (ge_mesh_top_any(ctx, base, px + fx * t, pz + fz * t, max_top + 1.f, feet + kKnee - 1.f,
+                        &y)) {
+      top = std::max(top, y);
+      any = true;
+    }
+  }
+  if (!any) return false;  // taller than he can reach
+  // Somewhere to land beyond it, clearly below its top and clear of it.
+  for (float t = d + 4.f; t <= d + 2.f * radius + 60.f; t += 4.f) {
+    const float qx = px + fx * t, qz = pz + fz * t;
+    const GeGround g = ge_ground_at(ctx, base, solids, qx, qz, top + 5.f,
+                                    feet - (free_move ? kMaxDrop : 4000.f));
+    if (!g.found || g.y > top - kStep) continue;
+    if (ge_blocked(ctx, base, px, pz, qx + fx * radius, qz + fz * radius, top + 20.f)) return false;
+    if (ge_blocked(ctx, base, qx, qz, qx - fx * radius, qz - fz * radius, g.y + kKnee)) continue;
+    if (ge_object_overlaps(solids, qx, qz, g.y, radius)) continue;
+    m->vault = true;
+    m->kind = g.kind;
+    m->tile = g.tile;
+    m->x = qx;
+    m->z = qz;
+    m->top = top + 6.f;
+    m->land_y = g.y;
+    return true;
+  }
+  return false;
+}
+
+// A press that found nothing to climb: say what was in front, for tuning.
+void ge_log_no_mantle(PPCContext* ctx, uint8_t* base, uint32_t player, int idx, float reach) {
+  const auto& solids = ge_solids(ctx, base, player, idx);
+  const float px = LDF32(base, player + kOffPosX);
+  const float pz = LDF32(base, player + kOffPosZ);
+  const float feet = LDF32(base, player + kOffFeet);
+  const float theta = LDF32(base, player + kOffTheta) * 0.017453292f;
+  const float fx = -std::sin(theta), fz = std::cos(theta);
+  const float d = ge_obstacle_ahead(ctx, base, px, pz, fx, fz, feet + kKnee, 90.f);
+  float mesh_top = 0.f;
+  bool has_mesh_top = false;
+  if (d >= 0.f) {
+    has_mesh_top = ge_mesh_top_any(ctx, base, px + fx * (d + 3.f), pz + fz * (d + 3.f),
+                                   feet + 400.f, feet, &mesh_top);
+  }
+  const GeSolid* obj = nullptr;
+  for (float t = 0.f; t <= 90.f && !obj; t += 6.f) {
+    for (const GeSolid& sd : solids) {
+      if (ge_in_poly(sd, px + fx * t, pz + fz * t)) {
+        obj = &sd;
+        break;
+      }
+    }
+  }
+  REXKRNL_INFO(
+      "GEMANTLE nothing to climb: feet={:.1f} reach={:.0f} objects={} wall_ahead={:.1f} "
+      "wall_top={} object_ahead={}",
+      feet, reach, solids.size(), d,
+      has_mesh_top ? fmt::format("{:.1f} (+{:.1f})", mesh_top, mesh_top - feet) : "none",
+      obj ? fmt::format("type {} top {:.1f} (+{:.1f}) bottom {:.1f}", obj->type, obj->top,
+                        obj->top - feet, obj->bottom)
+          : "none");
+}
+
 // Put Bond on top. Walkable floor: the way the game's own move does
-// (bondviewTrySimpleMovePlayerCollision): current tile + collision x/z. Mesh
-// top: keep his floor tile (rooms stay right) and switch to on-top movement.
-// Feet go a hair above the top so the game's landing code settles him.
+// (bondviewTrySimpleMovePlayerCollision): current tile + collision x/z. Mesh or
+// object top: keep a floor tile for rooms; with free movement off, switch to
+// on-top movement. Feet go a hair above the top so the game's landing settles
+// him.
 void ge_place_on_top(uint8_t* base, uint32_t player, int idx, const GeMantle& m) {
   STF32(base, player + kOffPosX, m.x);
   STF32(base, player + kOffPosZ, m.z);
-  if (m.mesh_top) {
+  const bool free_move = ge_free_move_on(base, player);
+  if (m.kind == GeTopKind::kFloor) {
+    ST32(base, player + kOffTile, m.tile);
+    g_on_top[idx].active = false;
+  } else if (free_move) {
+    if (m.tile) ST32(base, player + kOffTile, m.tile);
+  } else {
     GeOnTop& t = g_on_top[idx];
     t.active = true;
     t.player = player;
     t.anchor_tile = LD32(base, player + kOffTile);
-  } else {
-    ST32(base, player + kOffTile, m.tile);
-    g_on_top[idx].active = false;
   }
-  STF32(base, player + kOffGround, m.top);
-  STF32(base, player + kOffFeet, m.top + 0.5f);
+  if (m.vault) {
+    // Set down past it at clearance height; the game drops him to the ground.
+    STF32(base, player + kOffGround, m.land_y);
+    STF32(base, player + kOffFeet, std::max(m.top, m.land_y + 0.5f));
+  } else {
+    STF32(base, player + kOffGround, m.top);
+    STF32(base, player + kOffFeet, m.top + 0.5f);
+  }
   STF32(base, player + kOffVSpeed, 0.f);
-  REXKRNL_INFO("GEMANTLE onto {} top y={:.1f} at ({:.1f}, {:.1f})",
-               m.mesh_top ? "object" : "floor", m.top, m.x, m.z);
+  REXKRNL_INFO("GEMANTLE {} {} y={:.1f} at ({:.1f}, {:.1f})", m.vault ? "over, landing on" : "onto",
+               m.kind == GeTopKind::kFloor ? "floor" : m.kind == GeTopKind::kMesh ? "level" : "object",
+               m.vault ? m.land_y : m.top, m.x, m.z);
 }
 
 bool ge_on_top_valid(uint8_t* base, uint32_t player, int idx) {
@@ -2103,16 +2498,35 @@ void ge_jump(PPCRegister& r11) {
   const int idx = ge_player_index(base, player);
   if (idx < 0) return;
 
-  // On a mesh top: the ground is that top (the floor data has nothing here).
-  if (ge_on_top_valid(base, player, idx)) {
+  // Ground height for custom movement (the game only knows the floor data).
+  bool free_move = ge_free_move_on(base, player);
+  // On a ladder the game's own floor handling does the climbing.
+  if (free_move && ge_is_ladder_tile(ctx, base, LD32(base, player + kOffTile),
+                                     LDF32(base, player + kOffPosX),
+                                     LDF32(base, player + kOffPosZ))) {
+    free_move = false;
+  }
+  const bool on_top = !ge_free_move_on(base, player) && ge_on_top_valid(base, player, idx);
+  if (ge_free_move_on(base, player)) g_on_top[idx].active = false;
+  if (free_move || on_top) {
     const float feet = LDF32(base, player + kOffFeet);
     const float x = LDF32(base, player + kOffPosX), z = LDF32(base, player + kOffPosZ);
-    float top = 0.f;
-    if (ge_ground_below(ctx, base, x, z, feet + kStep, feet - 2000.f, &top)) {
-      STF32(base, player + kOffGround, top);
-    } else {
-      g_on_top[idx].active = false;  // nothing under him at all; hand back
-      REXKRNL_INFO("GEMANTLE off top: no ground found under Bond");
+    const auto& solids = ge_solids(ctx, base, player, idx);
+    const GeGround g = ge_ground_at(ctx, base, solids, x, z, feet + kStep, feet - 4000.f);
+    if (on_top) {
+      if (g.found && g.kind != GeTopKind::kFloor) {
+        STF32(base, player + kOffGround, g.y);
+      } else if (g.found) {
+        // Back over walkable floor (e.g. the object under him was destroyed).
+        STF32(base, player + kOffGround, g.y);
+        if (g.tile) ST32(base, player + kOffTile, g.tile);
+        g_on_top[idx].active = false;
+        REXKRNL_INFO("GEMANTLE off top: floor below");
+      }
+      // Nothing standable right under his centre (he's at a sloped edge):
+      // keep the last ground; stepping off is handled by the move.
+    } else if (g.found) {
+      STF32(base, player + kOffGround, g.y);
     }
   }
 
@@ -2139,6 +2553,30 @@ void ge_jump(PPCRegister& r11) {
 
   // A mantle in progress: once the feet clear the top, step onto it.
   if (m.active) {
+    constexpr uint32_t kPitch = 0x264u;  // vv_verta, degrees, negative = down
+    auto end_nod = [&] {
+      if (m.nod != 0.f) STF32(base, player + kPitch, LDF32(base, player + kPitch) - m.nod);
+      m.nod = 0.f;
+    };
+    if (m.climb) {
+      // A steady pull-up rather than a jump, with the view dipping toward the
+      // ledge and coming back up as he gets over it.
+      const float next = feet + m.rate;
+      const float span = std::max(m.top - m.start, 1.f);
+      const float t = std::clamp((next - m.start) / span, 0.f, 1.f);
+      const float nod = -9.f * std::sin(t * 3.14159265f);
+      STF32(base, player + kPitch, LDF32(base, player + kPitch) + (nod - m.nod));
+      m.nod = nod;
+      if (next >= m.top || ++m.frames > 120) {
+        end_nod();
+        if (next >= m.top) ge_place_on_top(base, player, idx, m);
+        m.active = false;
+      } else {
+        STF32(base, player + kOffFeet, next);
+        STF32(base, player + kOffVSpeed, 0.f);
+      }
+      return;
+    }
     if (++m.frames > 90 || (vspeed <= 0.f && feet < m.top - 1.f && grounded)) {
       m.active = false;  // fell short or was interrupted; just land normally
     } else if (feet >= m.top) {
@@ -2150,15 +2588,26 @@ void ge_jump(PPCRegister& r11) {
 
   // Start a mantle: launch just high enough to clear the top (the game's own
   // fall code carries him up), or step straight on if already above it.
+  const float bond_h = ge_bond_height(base, player);
   auto start_mantle = [&](float from_feet) {
     const float rise = m.top - from_feet;
     m.player = player;
     m.frames = 0;
+    m.nod = 0.f;
     if (rise <= 0.f) {
       ge_place_on_top(base, player, idx, m);
       return;
     }
     m.active = true;
+    // More than half his height: climb it (about half a second) instead of
+    // hopping.
+    m.climb = rise > 0.5f * bond_h;
+    if (m.climb) {
+      m.start = from_feet;
+      m.rate = std::max(rise / 28.f, 2.5f);
+      STF32(base, player + kOffVSpeed, 0.f);
+      return;
+    }
     const float v = std::sqrt(2.0f * kGravity * (rise + 6.0f));
     if (v > vspeed) STF32(base, player + kOffVSpeed, v);
     if (feet <= ground + 0.01f) STF32(base, player + kOffFeet, ground + 0.01f);
@@ -2166,7 +2615,8 @@ void ge_jump(PPCRegister& r11) {
 
   // In the air with A held: grab a top that's now within reach.
   if (!grounded && mantle_on && g_jump_held[slot].load(std::memory_order_relaxed)) {
-    if (ge_find_ledge(ctx, base, player, ground + kMinRise, feet + kAirReach, &m)) {
+    if (ge_find_ledge(ctx, base, player, idx, ground + kMinRise, feet + kAirReach, &m) ||
+        ge_find_vault(ctx, base, player, idx, feet + kAirReach, &m)) {
       start_mantle(feet);
     }
     return;
@@ -2179,11 +2629,13 @@ void ge_jump(PPCRegister& r11) {
 
   // Something to mantle onto in front, within reach: climb instead of a jump.
   if (mantle_on) {
-    const float reach = static_cast<float>(REXCVAR_GET(ge_mantle_reach));
-    if (ge_find_ledge(ctx, base, player, feet + kMinRise, feet + reach, &m)) {
+    const float reach = bond_h * static_cast<float>(REXCVAR_GET(ge_mantle_reach)) / 100.f;
+    if (ge_find_ledge(ctx, base, player, idx, feet + kMinRise, feet + reach, &m) ||
+        ge_find_vault(ctx, base, player, idx, feet + reach, &m)) {
       start_mantle(feet);
       return;
     }
+    ge_log_no_mantle(ctx, base, player, idx, reach);
   }
 
   // Plain jump: launch speed v = sqrt(2 * g * height) peaks at `height`.
@@ -2194,17 +2646,20 @@ void ge_jump(PPCRegister& r11) {
 }
 
 // ---------------------------------------------------------------------------
-// On-top movement. Midasm hook at the entry of sub_820B82A0
+// Custom movement. Midasm hook at the entry of sub_820B82A0
 // (bondviewCalcUpdatePlayerCollision(offset, allow_scoot)), return_on_true.
-// Returns false (game runs as normal) unless the current player stands on a
-// mesh top; then it moves him itself and the game's floor-based collision is
-// skipped for this move:
-//   * walls: rays at knee and chest height along the move (and either side of
-//     Bond's body); a hit slides him along the wall instead;
-//   * ground at the new spot: the highest surface within a step of his feet;
-//   * stepping onto walkable floor (the top ends): back to the game, on that
-//     floor tile, and he drops onto it with the game's own falling;
-//   * a drop into somewhere with no walkable floor: blocked, like an edge.
+// Returns false (the game moves Bond as normal) unless free movement is on or
+// Bond stands on a mesh/object top; then it moves him itself:
+//   * walls: mesh rays at knee and chest height along the move (and fanned
+//     out to either side of his body), plus every object's collision shape;
+//   * a blocked move slides along the wall (each axis on its own);
+//   * ground at the new spot: the highest surface within a step of his feet
+//     (higher than that is a wall); lower ground means he drops with the
+//     game's own falling;
+//   * on top (free movement off): stepping onto walkable floor hands him back
+//     to the game; a drop onto anything that isn't walkable floor is an edge;
+//   * free movement: a drop deeper than kMaxDrop (or into nothing) is an edge;
+//     the floor tile under him is kept current for rooms and guards.
 //   r3 = offset (coord3d*: x, y, z; y unused)
 // ---------------------------------------------------------------------------
 bool ge_on_top_move(PPCRegister& r3) {
@@ -2212,13 +2667,33 @@ bool ge_on_top_move(PPCRegister& r3) {
   const uint32_t player = LD32(base, GE_BONDVIEW_CUR);
   if (!player) return false;
   const int idx = ge_player_index(base, player);
-  if (idx < 0 || !ge_on_top_valid(base, player, idx)) return false;
+  if (idx < 0) return false;
+  const bool free_move = ge_free_move_on(base, player);
+  if (!free_move && !ge_on_top_valid(base, player, idx)) return false;
 
   const float ox = LDF32(base, r3.u32 + 0), oz = LDF32(base, r3.u32 + 8);
   const float cx = LDF32(base, player + kOffPosX), cz = LDF32(base, player + kOffPosZ);
   const float feet = LDF32(base, player + kOffFeet);
+
+  // Ladders: on one, or stepping onto one, the game's own floor movement does
+  // the climbing (they're steep floor tiles, with the rungs as solid geometry).
+  if (free_move) {
+    const uint32_t cur_tile = LD32(base, player + kOffTile);
+    if (ge_is_ladder_tile(ctx, base, cur_tile, cx, cz)) return false;
+    // Look a little ahead in the move direction for the foot of a ladder.
+    const float ol = std::sqrt(ox * ox + oz * oz);
+    if (ol > 1e-4f) {
+      float r = LDF32(base, player + kOffRadius);
+      if (!(r > 5.f && r < 80.f)) r = 30.f;
+      const float ax = cx + ox / ol * (ol + r), az = cz + oz / ol * (ol + r);
+      float ty = 0.f;
+      const uint32_t ahead = ge_find_floor_below(ctx, base, ax, feet + kStep, az, &ty);
+      if (ahead && ahead != cur_tile && ge_is_ladder_tile(ctx, base, ahead, ax, az)) return false;
+    }
+  }
   float radius = LDF32(base, player + kOffRadius);
   if (!(radius > 5.f && radius < 80.f)) radius = 30.f;
+  const auto& solids = ge_solids(ctx, base, player, idx);
 
   // Same bookkeeping the game does at the start of the move.
   STF32(base, player + kOffPrevPos + 0, cx);
@@ -2226,43 +2701,113 @@ bool ge_on_top_move(PPCRegister& r3) {
   STF32(base, player + kOffPrevPos + 8, cz);
   ST32(base, player + kOffAutoCrouch, 2u);  // CROUCH_STAND
 
-  auto try_move = [&](float mx, float mz) -> int {  // 1 moved, 0 blocked, -1 wall (h set)
+  const char* why = "";
+  GeRayHit wall{};
+  auto try_move = [&](float mx, float mz) -> bool {
     const float len = std::sqrt(mx * mx + mz * mz);
-    if (len < 1e-4f) return 1;
+    if (len < 1e-4f) return true;
     const float dx = mx / len, dz = mz / len;
     const float nx = cx + mx, nz = cz + mz;
     // Walls along the way, reaching a body-radius past the destination.
     const float rx = nx + dx * radius, rz = nz + dz * radius;
-    const float sx = -dz * radius * 0.7f, sz = dx * radius * 0.7f;  // body sides
-    GeRayHit h{};
-    if (ge_blocked(ctx, base, cx, cz, rx, rz, feet + kKnee, &h) ||
-        ge_blocked(ctx, base, cx, cz, rx, rz, feet + kChest, &h) ||
-        ge_blocked(ctx, base, cx + sx, cz + sz, rx + sx, rz + sz, feet + kKnee, &h) ||
-        ge_blocked(ctx, base, cx - sx, cz - sz, rx - sx, rz - sz, feet + kKnee, &h)) {
-      return 0;
+    // Fan from his centre (which is never inside a wall) to either side of
+    // his body at the destination.
+    // A side he's already pressed against (a wall right beside him) doesn't
+    // stop him moving along it; the centre rays still stop him walking into it.
+    const float sx = -dz * radius * 0.8f, sz = dx * radius * 0.8f;
+    auto side_blocked = [&](float s) {
+      if (ge_blocked(ctx, base, cx, cz, cx + s * sx, cz + s * sz, feet + kKnee)) return false;
+      return ge_blocked(ctx, base, cx, cz, nx + s * sx, nz + s * sz, feet + kKnee);
+    };
+    if (ge_blocked(ctx, base, cx, cz, rx, rz, feet + kKnee) ||
+        ge_blocked(ctx, base, cx, cz, rx, rz, feet + kChest) || side_blocked(1.f) ||
+        side_blocked(-1.f)) {
+      why = "wall";
+      wall = g_last_wall;
+      return false;
     }
-    float top = -1.0e30f, floor_y = -1.0e30f;
-    const bool has_top = ge_ground_below(ctx, base, nx, nz, feet + kStep, feet - 2000.f, &top);
-    const uint32_t tile = ge_find_floor_below(ctx, base, nx, feet + kStep, nz, &floor_y);
-    if (tile && (!has_top || top <= floor_y + 2.f)) {
-      // Walkable floor here: back to the game's own movement.
-      STF32(base, player + kOffPosX, nx);
-      STF32(base, player + kOffPosZ, nz);
-      ST32(base, player + kOffTile, tile);
-      STF32(base, player + kOffGround, floor_y);
-      g_on_top[idx].active = false;
-      REXKRNL_INFO("GEMANTLE off top onto floor y={:.1f}", floor_y);
-      return 1;
+    if (ge_object_blocks(solids, cx, cz, nx, nz, feet, radius)) {
+      why = "object";
+      return false;
     }
-    if (!has_top || top < feet - kStep) return 0;  // drop with no floor: edge
-    STF32(base, player + kOffPosX, nx);
-    STF32(base, player + kOffPosZ, nz);
-    return 1;
+
+    const float drop_limit = feet - (free_move ? kMaxDrop : 4000.f);
+    const GeGround g = ge_ground_at(ctx, base, solids, nx, nz, feet + kStep, drop_limit);
+
+    // Settle at a spot: free movement keeps the floor tile for rooms; on top,
+    // walkable floor hands him back to the game.
+    auto settle = [&](float qx, float qz, const GeGround& gq) {
+      STF32(base, player + kOffPosX, qx);
+      STF32(base, player + kOffPosZ, qz);
+      if (free_move) {
+        if (gq.tile) ST32(base, player + kOffTile, gq.tile);  // rooms / guards
+      } else if (gq.kind == GeTopKind::kFloor) {
+        ST32(base, player + kOffTile, gq.tile);
+        g_on_top[idx].active = false;
+        REXKRNL_INFO("GEMANTLE off top onto floor y={:.1f}", gq.y);
+      }
+    };
+
+    // In the air (jumping or falling): just carry on; he lands wherever he
+    // comes down. A void below is still an edge.
+    const float cur_ground = LDF32(base, player + kOffGround);
+    if (feet > cur_ground + 2.f) {
+      if (!g.found) {
+        why = "in the air over nothing";
+        return false;
+      }
+      settle(nx, nz, g);
+      return true;
+    }
+    const bool dropping = !g.found || g.y < feet - kStep;
+    if (!dropping) {
+      settle(nx, nz, g);
+      return true;
+    }
+    // Stepping off something: land on the first spot ahead he can stand on
+    // that's a body-width clear of what he's leaving (so he doesn't end up
+    // against or inside it).
+    for (float t = len; t <= len + 2.f * radius + 24.f; t += 4.f) {
+      const float qx = cx + dx * t, qz = cz + dz * t;
+      const GeGround gq = ge_ground_at(ctx, base, solids, qx, qz, feet + kStep, drop_limit);
+      if (!gq.found) continue;
+      if (gq.y < feet - kStep &&
+          ge_blocked(ctx, base, qx, qz, qx - dx * radius, qz - dz * radius, gq.y + kKnee)) {
+        continue;
+      }
+      if (ge_object_overlaps(solids, qx, qz, gq.y, radius)) continue;  // e.g. the crate he's leaving
+      if (t > len &&
+          (ge_blocked(ctx, base, cx, cz, qx + dx * radius, qz + dz * radius, feet + kKnee) ||
+           ge_blocked(ctx, base, cx, cz, qx + dx * radius, qz + dz * radius, feet + kChest))) {
+        why = "wall before the landing spot";
+        return false;
+      }
+      settle(qx, qz, gq);
+      return true;
+    }
+    if (free_move && g.found) {  // nowhere clear ahead: just drop here
+      settle(nx, nz, g);
+      return true;
+    }
+    why = g.found ? "drop with no clear landing spot" : "edge (no ground below)";
+    return false;  // edge
   };
 
-  if (try_move(ox, oz) == 0) {
-    // Slide: try each axis of the move on its own.
-    if (try_move(ox, 0.f) == 0) try_move(0.f, oz);
+  if (!try_move(ox, oz)) {
+    const char* first = why;
+    if (!try_move(ox, 0.f) && !try_move(0.f, oz)) {  // slide along what blocked him
+      // Stuck: say why (at most once a second).
+      static auto last = std::chrono::steady_clock::time_point{};
+      const auto now = std::chrono::steady_clock::now();
+      if (std::sqrt(ox * ox + oz * oz) > 0.05f && now - last > std::chrono::seconds(1)) {
+        last = now;
+        REXKRNL_INFO(
+            "GEMANTLE blocked ({}): {} | feet={:.1f} ground={:.1f} pos=({:.1f}, {:.1f}) move=({:.2f}, "
+            "{:.2f}) wall_hit=({:.1f}, {:.1f}, {:.1f}) normal=({:.2f}, {:.2f}, {:.2f})",
+            free_move ? "free movement" : "on top", first, feet, LDF32(base, player + kOffGround), cx,
+            cz, ox, oz, wall.x, wall.y, wall.z, wall.nx, wall.ny, wall.nz);
+      }
+    }
   }
   return true;
 }

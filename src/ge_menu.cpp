@@ -701,7 +701,16 @@ void GeMenuDialog::DrawContent(ImGuiIO& /*io*/) {
           if (callbacks_.persist_config) callbacks_.persist_config();
         }
         ImGui::TextColored(ImColor(kInkDim),
-                           "(jump at a ledge, or hold A mid-air near one, to climb onto it)");
+                           "(jump at a ledge, barrier or object to climb onto it, or at a railing "
+                           "to vault it; hold A mid-air to grab one)");
+        bool free_move = GetCvarB("ge_free_move");
+        if (ImGui::Checkbox("Free movement", &free_move)) {
+          SetCvarB("ge_free_move", free_move);
+          if (callbacks_.persist_config) callbacks_.persist_config();
+        }
+        ImGui::TextColored(ImColor(kInkDim),
+                           "(walls and objects block you instead of the level's floor map; walk on "
+                           "anything flat. Off = the game's original movement)");
       }
 
       ImGui::Spacing();

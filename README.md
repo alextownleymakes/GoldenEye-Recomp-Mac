@@ -8,7 +8,7 @@ The original's features carry over: keyboard and mouse, online multiplayer, grap
 * **A self-contained app.** The game files are packed inside `GoldenEye.app`; drag it to Applications.
 * **Controller support.** Xbox, PlayStation (DualSense/DualShock) and other controllers work over Bluetooth or USB.
 * **Unlimited sprint (mod).** Press **L3** (or **Shift**) to sprint; it stays on until you press it again or stop moving. **R3** still crouches. Switch to hold-to-sprint under **Controls → Sprint Mode** in the pause menu.
-* **Jump (mod).** Press **A** (Cross on PlayStation, Space on the keyboard) to jump; jump at a ledge or a barrier to mantle onto it (experimental). A still opens doors and confirms menus as before. Turn it off under **Controls → Jump** in the pause menu, or set `ge_jump_height` in `ge.toml`.
+* **Jump (mod).** Press **A** (Cross on PlayStation, Space on the keyboard) to jump; jump at a ledge, barrier or object to mantle onto it, or at a railing to vault it. Free movement (on by default) uses real collision instead of the floor map, so you can walk across barriers, crates and desks. A still opens doors and confirms menus as before. Turn it off under **Controls → Jump** in the pause menu, or set `ge_jump_height` in `ge.toml`.
 * **Quicksave / quickload (mod).** Emulator-style save states: click the left half of a PS4/PS5 touchpad (or press F5) to save, the right half (or F9) to load. See [Quicksave](#quicksave).
 * **A Windows build script (untested).** See [Building for Windows](#building-for-windows-untested).
 
@@ -99,7 +99,7 @@ This is new; if a load misbehaves, the log (see below) has `GESTATE` lines expla
 These `ge.toml` options control sprint:
 
 ```toml
-ge_sprint_speed = 1.75     # 1.0 = normal run; the game's own "full speed" is 1.25
+ge_sprint_speed = 2.0      # 1.0 = normal run; the game's own "full speed" is 1.25
 ge_sprint_toggle = true    # false = hold to sprint (also in Controls → Sprint Mode)
 ge_sprint_enable = false   # turn sprint off; L3 crouches again
 ```
@@ -107,10 +107,11 @@ ge_sprint_enable = false   # turn sprint off; L3 crouches again
 And these control jump and mantling:
 
 ```toml
-ge_jump_height = 50.0      # how high Bond jumps (game units; he's about 170 tall)
+ge_jump_height = 85.0      # how high Bond jumps (game units; he's about 170 tall)
 ge_jump_enable = false     # turn jump off (also in Controls → Jump)
-ge_mantle_reach = 110.0    # highest ledge a jump can climb onto
+ge_mantle_reach = 100.0    # highest thing he can climb, % of Bond's height
 ge_mantle_enable = false   # plain jumps only (also in Controls → Mantle onto ledges)
+ge_free_move = false       # original movement (also in Controls → Free movement)
 ```
 
 ## Online

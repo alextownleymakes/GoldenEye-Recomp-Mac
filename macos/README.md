@@ -43,7 +43,7 @@ If macOS says the app "can't be opened", right-click it, choose **Open**, then c
 
 Press **L3** (click the left stick) to sprint while moving forward. By default it toggles: it stays on until you press L3 again or stop moving. It's unlimited, with no stamina. R3 still crouches. On keyboard, sprint is **Shift**, rebindable in the pause menu's key bindings, and **C** (L3) still crouches.
 
-* `ge_sprint_speed` in `ge.toml` sets how fast (default `1.75`; normal running is 1.0 and the game's own "full speed" after 3 seconds is 1.25).
+* `ge_sprint_speed` in `ge.toml` sets how fast (default `2.0`; normal running is 1.0 and the game's own "full speed" after 3 seconds is 1.25).
 * **Sprint Mode** (pause menu → Controls), or `ge_sprint_toggle` in `ge.toml`: Toggle (default, `true`) or Hold (`false`).
 * `ge_sprint_enable = false` turns it off and gives L3 back to crouching.
 
@@ -51,17 +51,21 @@ Press **L3** (click the left stick) to sprint while moving forward. By default i
 
 Press **A** (Cross on PlayStation, **Space** on the keyboard) to jump. A still does what it always did (opens doors, confirms menus), so pressing it at a door opens the door and also hops. Bond jumps and falls with the game's own falling physics, including the small dip on landing.
 
-* `ge_jump_height` in `ge.toml` sets how high (default `50`; Bond is about 170 units tall).
+* `ge_jump_height` in `ge.toml` sets how high (default `85`; Bond is about 170 units tall).
 * **Jump** (pause menu → Controls), or `ge_jump_enable = false` in `ge.toml`, turns it off.
 
-**Mantling.** Jump while facing something with a flat top within reach and Bond climbs onto it. You can also jump and hold A as you rise past one. That covers raised floor and ledges, and solid level pieces like the Dam's concrete barriers, bunkers and low walls (anything bullets hit). The top has to be higher than a step, no more than 110 units above his feet by default (about two-thirds of his height), wide enough to stand on, with nothing in the way over the edge and room above it. He rises with the game's own physics and is placed on top once his feet clear it.
+**Mantling.** Jump while facing something with a flat top within reach and Bond climbs onto it. You can also jump and hold A as you rise past one. That covers raised floor and ledges, solid level pieces like the Dam's concrete barriers, bunkers and low walls, and objects like desks, crates and drums. The top has to be higher than a step and no taller than Bond himself by default, wide enough to stand on, with nothing in the way over the edge and room above it. Up to half his height he hops up with the game's own physics; anything taller he pulls himself up onto in a steady climb, with the view dipping toward the ledge and coming back up as he gets over.
 
-Once he's on a barrier or bunker he can walk around on it, jump, and drop off the edge back onto the floor. Those tops aren't part of the game's walkable floor, so while he's up there this mod moves him (walls are found with the same collision bullets use) and hands him back to the game the moment he steps onto real floor. He can't step off a top onto ground that isn't walkable in the normal game; that edge acts like a wall.
+Railings and anything else too thin to stand on get vaulted instead: jump at one and he goes over and lands on the other side (on stair landings, ship decks, watchtowers). Walking off the edge of anything he's standing on sets him down a body-width clear of it.
 
-* `ge_mantle_reach` in `ge.toml` sets the highest top he can climb (default `110`).
+Once he's on a barrier or an object he can walk around on it, jump, and drop off the edge back onto the floor. Shoot the desk he's standing on until it blows up and he falls. Those tops aren't part of the game's walkable floor, so while he's up there this mod moves him: walls come from the same collision bullets use, and objects from their own collision shapes. He goes back to the game's movement as soon as he steps onto real floor. He can't step off a top onto ground the normal game doesn't let you walk on; that edge acts like a wall.
+
+* `ge_mantle_reach` in `ge.toml` sets the highest top he can climb, in percent of his height (default `100`).
 * **Mantle onto ledges** (pause menu → Controls), or `ge_mantle_enable = false`, turns it off and leaves plain jumping.
-* Movable objects (crates, drums, desks) aren't climbable.
-* This is experimental. If something goes wrong on top of an object, step off or turn mantling off.
+
+**Free movement (on by default).** **Free movement** (pause menu → Controls), or `ge_free_move = false` to turn it off, replaces the game's floor map with real collision everywhere. Walls, doors, glass, guards and objects block him exactly where they are; he can walk, jump and drop between floor, barriers, crates and desks with no transitions; and he only stops at a drop deeper than about four times his height or into nothing. Ladders still climb the game's own way. The floor map is still followed in the background so the right rooms are drawn and guards know where he is. Because the movement code is this mod's rather than Rare's, sliding along walls won't feel exactly like the original, and it may let you reach places the levels weren't built for. Turn it off for the original movement (mantling then works with a hand-off at the edges of what you climb).
+
+If anything misbehaves, the log has `GEMANTLE` lines.
 
 ## Quicksave (mod)
 
