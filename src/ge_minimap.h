@@ -18,9 +18,14 @@ struct GeMinimapView {
   float range = 1200.f;      // world units from centre to rim
   std::vector<float> floors;  // per polygon: n, then n * (x, z)
   std::vector<float> walls;   // per wall: x0, z0, x1, z1
+  std::vector<float> objects; // object footprints: n, then n * (x, z)
   std::vector<GeMinimapMarker> markers;
 };
 
 // A copy of the latest minimap, or false when there's nothing to show (not in
 // a level, paused, turned off).
 bool ge_minimap_get(GeMinimapView* out);
+
+// The local player's current weapons (item ids, -1 = none) for the HUD label
+// above the ammo counter; false when there's no live gameplay to show it on.
+bool ge_hud_weapon(int* right, int* left);

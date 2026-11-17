@@ -677,18 +677,91 @@ index 20a2cd8..c7e914f 100644
        if (!SDL_PutAudioStreamData(stream, data, len)) {
          REXAPU_ERROR("SDL_PutAudioStreamData() failed: {}", SDL_GetError());
 diff --git a/src/audio/xma_decoder.cpp b/src/audio/xma_decoder.cpp
-index a0a178d..78df2a9 100644
+index a0a178d..ec45bd0 100644
 --- a/src/audio/xma_decoder.cpp
 +++ b/src/audio/xma_decoder.cpp
-@@ -9,6 +9,7 @@
+@@ -9,6 +9,12 @@
   * @modified    Tom Clay, 2026 - Adapted for ReXGlue runtime
   */
  
 +#include <cstring>
++#include <chrono>
++#include <mutex>
++#include <set>
++#include <string>
++
  #include <rex/audio/xma/context.h>
  #include <rex/audio/xma/decoder.h>
  #include <rex/cvar.h>
-@@ -354,6 +355,62 @@ void XmaDecoder::WriteRegister(uint32_t addr, uint32_t value) {
+@@ -203,16 +209,28 @@ int XmaDecoder::GetContextId(uint32_t guest_ptr) {
+   return (guest_ptr - context_data_first_ptr_) >> 6;
+ }
+ 
++// GoldenEye audio diagnostics: how many decoder contexts are in use.
++static uint32_t GeContextsInUse(XmaContext* contexts, uint32_t count) {
++  uint32_t n = 0;
++  for (uint32_t i = 0; i < count; ++i) n += contexts[i].is_allocated() ? 1 : 0;
++  return n;
++}
++
+ uint32_t XmaDecoder::AllocateContext() {
+   size_t index = context_bitmap_.Acquire();
+   if (index == -1) {
+     // Out of contexts.
++    const uint32_t total = kContextCount;  // copy: the log takes its args by reference
++    REXAPU_ERROR("GEAUDIO xma: OUT OF CONTEXTS ({} of {} in use)",
++                 GeContextsInUse(contexts_, total), total);
+     return 0;
+   }
+ 
+   XmaContext& context = contexts_[index];
+   assert_false(context.is_allocated());
+   context.set_is_allocated(true);
++  REXAPU_INFO("GEAUDIO xma: allocate context {} ({} in use)", index,
++              GeContextsInUse(contexts_, kContextCount));
+   return context.guest_ptr();
+ }
+ 
+@@ -224,6 +242,8 @@ void XmaDecoder::ReleaseContext(uint32_t guest_ptr) {
+   assert_true(context.is_allocated());
+   context.Release();
+   context_bitmap_.Release(context_id);
++  REXAPU_INFO("GEAUDIO xma: release context {} ({} in use)", context_id,
++              GeContextsInUse(contexts_, kContextCount));
+ }
+ 
+ bool XmaDecoder::BlockOnContext(uint32_t guest_ptr, bool poll) {
+@@ -293,6 +313,29 @@ void XmaDecoder::WriteRegister(uint32_t addr, uint32_t value) {
+         context.Enable();
+       }
+     }
++    // GoldenEye audio diagnostics: every ~2 s, list the contexts the game
++    // kicked (asked to decode) in that window.
++    {
++      static std::mutex ge_mutex;
++      static std::set<uint32_t> ge_kicked;
++      static uint32_t ge_kicks = 0;
++      static auto ge_last = std::chrono::steady_clock::now();
++      std::lock_guard<std::mutex> lock(ge_mutex);
++      uint32_t v = kicked_value;
++      for (int i = 0; v && i < 32; ++i, v >>= 1) {
++        if (v & 1) ge_kicked.insert(base_context_id + i);
++      }
++      ++ge_kicks;
++      const auto now = std::chrono::steady_clock::now();
++      if (now - ge_last >= std::chrono::seconds(2)) {
++        std::string ids;
++        for (uint32_t id : ge_kicked) ids += (ids.empty() ? "" : ",") + std::to_string(id);
++        REXAPU_INFO("GEAUDIO xma: {} kicks in last ~2s, contexts [{}]", ge_kicks, ids);
++        ge_kicked.clear();
++        ge_kicks = 0;
++        ge_last = now;
++      }
++    }
+     // Decode inline. waiting on the worker sweep stalls the realtime
+     // audio thread 50-100ms during kick bursts.
+     for (int i = 0; kicked_value && i < 32; ++i, kicked_value >>= 1) {
+@@ -354,6 +397,62 @@ void XmaDecoder::WriteRegister(uint32_t addr, uint32_t value) {
    }
  }
  
@@ -3501,6 +3574,91 @@ index 6e9ac8a..4fda8c4 100644
  REX_EXPORT_STUB(__imp__NetDll_XmlDownloadContinue);
  REX_EXPORT_STUB(__imp__NetDll_XmlDownloadGetParseTime);
  REX_EXPORT_STUB(__imp__NetDll_XmlDownloadGetReceivedDataSize);
+diff --git a/src/kernel/xboxkrnl/xboxkrnl_io.cpp b/src/kernel/xboxkrnl/xboxkrnl_io.cpp
+index cce4f65..f539cc7 100644
+--- a/src/kernel/xboxkrnl/xboxkrnl_io.cpp
++++ b/src/kernel/xboxkrnl/xboxkrnl_io.cpp
+@@ -12,6 +12,11 @@
+ // Disable warnings about unused parameters for kernel functions
+ #pragma GCC diagnostic ignored "-Wunused-parameter"
+ 
++#include <atomic>
++#include <cctype>
++#include <chrono>
++#include <string>
++
+ #include <rex/filesystem/device.h>
+ #include <rex/kernel/xboxkrnl/private.h>
+ #include <rex/logging.h>
+@@ -32,6 +37,41 @@
+ namespace rex::kernel::xboxkrnl {
+ using namespace rex::system;
+ 
++// GoldenEye audio diagnostics: music is streamed from music.xwb while sound
++// effects come from memory, so log what happens to the music file: opens,
++// closes, and a read summary every 2 seconds (count, bytes, last offset,
++// status). Failures are logged at once.
++namespace {
++std::atomic<uint32_t> g_ge_music_handle{0};
++std::atomic<uint32_t> g_ge_music_reads{0};
++std::atomic<uint64_t> g_ge_music_bytes{0};
++std::atomic<int64_t> g_ge_music_last_ms{0};
++int64_t GeNowMs() {
++  return std::chrono::duration_cast<std::chrono::milliseconds>(
++             std::chrono::steady_clock::now().time_since_epoch())
++      .count();
++}
++void GeMusicRead(uint32_t handle, uint64_t offset, uint32_t len, uint32_t status, uint32_t got,
++                 bool sync) {
++  if (!handle || handle != g_ge_music_handle.load()) return;
++  if (XFAILED(status) && status != X_STATUS_END_OF_FILE) {
++    REXKRNL_INFO("GEAUDIO music.xwb read FAILED: offset={} len={} status={:#x}", offset, len,
++                 status);
++  }
++  ++g_ge_music_reads;
++  g_ge_music_bytes += got;
++  const int64_t now = GeNowMs();
++  if (now - g_ge_music_last_ms.load() >= 2000) {
++    g_ge_music_last_ms = now;
++    REXKRNL_INFO(
++        "GEAUDIO music.xwb reads in last ~2s: {} ({} KB), last offset={} len={} status={:#x} "
++        "sync={}",
++        g_ge_music_reads.exchange(0), g_ge_music_bytes.exchange(0) / 1024, offset, len, status,
++        sync);
++  }
++}
++}  // namespace
++
+ struct CreateOptions {
+   // https://processhacker.sourceforge.io/doc/ntioapi_8h.html
+   static const uint32_t FILE_DIRECTORY_FILE = 0x00000001;
+@@ -168,6 +208,16 @@ u32 NtCreateFile_entry(mapped_u32 handle_out, u32 desired_access,
+   }
+ 
+   *handle_out = handle;
++  {
++    std::string lower(target_path);
++    for (auto& ch : lower) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
++    if (lower.find("music.") != std::string::npos) {
++      REXKRNL_INFO("GEAUDIO open '{}' -> {:#x} handle={:#x}", target_path, result, handle);
++      if (XSUCCEEDED(result) && lower.find("music.xwb") != std::string::npos) {
++        g_ge_music_handle = handle;
++      }
++    }
++  }
+   if (XFAILED(result)) {
+     REXKRNL_IMPORT_FAIL("NtCreateFile", "path='{}' -> {:#x}", target_path, result);
+   } else {
+@@ -278,6 +328,9 @@ u32 NtReadFile_entry(u32 file_handle, u32 event_handle, mapped_void apc_routine_
+   if (ev && signal_event) {
+     ev->Set(0, false);
+   }
++  GeMusicRead(file_handle, byte_offset_ptr ? byte_offset : 0, buffer_length, result,
++              io_status_block ? (uint32_t)io_status_block->information : 0,
++              file ? file->is_synchronous() : false);
+ 
+   // Log detailed completion info for debugging async IO issues
+   if (file) {
 diff --git a/src/kernel/xboxkrnl/xboxkrnl_module.cpp b/src/kernel/xboxkrnl/xboxkrnl_module.cpp
 index dcb3af6..10b111e 100644
 --- a/src/kernel/xboxkrnl/xboxkrnl_module.cpp

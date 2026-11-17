@@ -1420,9 +1420,27 @@ std::array<bool, 4> g_jump_btn_prev{};
 std::array<std::atomic<bool>, 4> g_jump_held{};
 // Frame counter (bumped every input poll) for per-frame caches.
 std::atomic<uint64_t> g_ge_frame{0};
+// g_ge_frame when Bond's per-frame update last ran: "in gameplay" for the
+// modern button layout (menus, the watch and cutscenes don't run it).
+std::atomic<uint64_t> g_ge_level_frame{0};
+bool ge_in_gameplay() {
+  return g_ge_frame.load(std::memory_order_relaxed) -
+             g_ge_level_frame.load(std::memory_order_relaxed) <= 3u;
+}
+// Modern layout, game button bits in -> out: Square (X) = action (A),
+// Circle (B) = reload (X), Cross (A) = jump only (not passed to the game).
+uint16_t ge_modern_remap(uint16_t b) {
+  uint16_t out = static_cast<uint16_t>(b & ~(0x1000u | 0x2000u | 0x4000u));
+  if (b & 0x4000u) out |= 0x1000u;  // Square -> action
+  if (b & 0x2000u) out |= 0x4000u;  // Circle -> reload
+  return out;
+}
 constexpr int kJumpBufferFrames = 6;
-// While airborne with A held, ledges up to this far above the feet are grabbed.
-constexpr float kAirReach = 45.0f;
+// In the air (after a jump, or with A held), a ledge up to this fraction of
+// Bond's height above his feet is grabbed: he reaches up for it.
+constexpr float kAirReachFrac = 0.75f;
+// Set when this mod launches a jump; cleared when he's back on the ground.
+std::array<std::atomic<bool>, 4> g_jumped{};
 // A ledge must be at least this far above the floor Bond is on; anything lower
 // he can already walk or step onto.
 constexpr float kMinRise = 35.0f;
@@ -1490,6 +1508,17 @@ REXCVAR_DEFINE_DOUBLE(ge_sprint_speed, 2.0, "Input",
                       "Sprint speed multiplier (normal run 1.0, the game's own full-speed run "
                       "after 3s is 1.25)")
     .range(1.0, 3.0);
+// Modern controls (mod): one switch for sprint (L3), jump and mantle (A /
+// Cross), and the face-button layout in gameplay: A/Cross only jumps,
+// X/Square is the action button (doors, computers), B/Circle reloads, Y/
+// Triangle swaps weapons. Off = the original game's controls. Menus always
+// keep the original buttons.
+// Auto-center view (the original "look ahead"): walking or running eases the
+// view pitch back to level. Off (default) = the view stays where you left it.
+REXCVAR_DEFINE_BOOL(ge_auto_center_view, false, "Input",
+                    "Moving re-centres the view up/down (original behaviour)");
+REXCVAR_DEFINE_BOOL(ge_modern_controls, true, "Input",
+                    "Modern controls: sprint, jump, mantle and the modern button layout");
 // Jump: a mod, not in the original game. A (Cross on PlayStation, Space on the
 // keyboard) jumps; A still does everything it normally does (doors, menus).
 REXCVAR_DEFINE_BOOL(ge_jump_enable, true, "Input", "A button jumps (mod)");
@@ -1673,7 +1702,7 @@ void ge_inject_keyboard(PPCRegister& /*r11*/) {
   // it turns off as soon as the player stops moving (left stick centred and,
   // for slot 0, no movement keys held).
   {
-    const bool sprint_on = REXCVAR_GET(ge_sprint_enable);
+    const bool sprint_on = REXCVAR_GET(ge_modern_controls);
     const bool toggle_mode = REXCVAR_GET(ge_sprint_toggle);
     const bool kb_active = REXCVAR_GET(ge_keyboard_enable) && ge_input_active();
     constexpr int kStickDeadzone = 7849;  // XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE
@@ -1722,7 +1751,7 @@ void ge_inject_keyboard(PPCRegister& /*r11*/) {
 
   // Jump (A): latch a request on the press so the movement code can act on it.
   {
-    const bool jump_on = REXCVAR_GET(ge_jump_enable);
+    const bool jump_on = REXCVAR_GET(ge_modern_controls);
     const bool kb_active = REXCVAR_GET(ge_keyboard_enable) && ge_input_active();
     for (uint32_t i = 0; i < 4; ++i) {
       bool pressed = jump_on && (LD16(base, GE_PAD0 + GE_PAD_STRIDE * i) & BTN_A) != 0;
@@ -1735,6 +1764,15 @@ void ge_inject_keyboard(PPCRegister& /*r11*/) {
       }
       g_jump_btn_prev[i] = pressed;
       g_jump_held[i].store(pressed, std::memory_order_relaxed);
+    }
+  }
+
+  // Modern button layout, in gameplay only (menus keep Cross = confirm).
+  const bool modern_layout = REXCVAR_GET(ge_modern_controls) && ge_in_gameplay();
+  if (modern_layout) {
+    for (uint32_t i = 0; i < 4; ++i) {
+      const uint32_t pad = GE_PAD0 + GE_PAD_STRIDE * i;
+      ST16(base, pad, ge_modern_remap(LD16(base, pad)));
     }
   }
 
@@ -1761,6 +1799,7 @@ void ge_inject_keyboard(PPCRegister& /*r11*/) {
   if (ge_key_down("ge_key_dright")) add |= BTN_DPAD_RIGHT;
   if (ge_key_down("ge_key_start")) add |= BTN_START;
   if (ge_key_down("ge_key_back")) add |= BTN_BACK;
+  if (modern_layout) add = ge_modern_remap(add);
   if (add) ST16(base, GE_PAD0 + 0, LD16(base, GE_PAD0 + 0) | add);
 
   if (ge_key_down("ge_key_lt")) base[GE_PAD0 + 2] = 0xFF;
@@ -1820,7 +1859,7 @@ static int ge_pad_slot_for_player(uint8_t* base, uint32_t player) {
 }
 
 void ge_sprint_boost(PPCRegister& f0, PPCRegister& f13) {
-  if (!REXCVAR_GET(ge_sprint_enable) || f0.f64 <= 0.0) return;  // forward only
+  if (!REXCVAR_GET(ge_modern_controls) || f0.f64 <= 0.0) return;  // forward only
   PPCContext* ctx; uint8_t* base; getcb(ctx, base); (void)ctx;
 
   const uint32_t cur = LD32(base, GE_BONDVIEW_CUR);
@@ -1886,7 +1925,7 @@ constexpr float kStep = 30.0f;                // the game's step-up height (alwa
 constexpr float kKnee = kStep + 6.0f;         // wall-test heights above the feet
 constexpr float kChest = 90.0f;
 constexpr float kBody = 150.0f;               // objects lower than this above the feet block
-constexpr float kHeadroom = 150.0f;           // clear space needed above a top
+constexpr float kHeadroom = 100.0f;           // clear space needed above a top (crouched)
 constexpr float kMaxDrop = 800.0f;            // free movement: no stepping into a deeper drop
 constexpr float kFloorBias = 10.0f;           // mesh must beat the floor data by this to count
 
@@ -1995,6 +2034,103 @@ bool ge_is_ladder_tile(PPCContext* ctx, uint8_t* base, uint32_t tile, float x, f
   const float gz = ge_tile_height(ctx, base, tile, x, z + 4.f) - y0;
   const float slope = std::sqrt(gx * gx + gz * gz) / 4.f;
   return std::isfinite(slope) && slope > 2.0f;
+}
+
+// Is Bond against a ladder? Ladders are special floor-map tiles beside the
+// floor he stands on: he doesn't walk onto them, he pushes into them and the
+// game raises him (bondview: after the move it gathers the tiles around him
+// with stanTileDistanceRelated, sub_8210FEC0, and a ladder sets the locus
+// count, read by sub_823AE350). Same test, same radii as the game.
+bool ge_near_ladder(PPCContext* ctx, uint8_t* base, uint32_t player, float radius_scale) {
+  const uint32_t tile = LD32(base, player + kOffTile);
+  if (!tile) return false;
+  float radius = LDF32(base, player + kOffRadius);
+  if (!(radius > 5.f && radius < 80.f)) radius = 30.f;
+  const PPCContext saved = *ctx;
+  const uint32_t sp = ge_scratch_sp(saved);
+  const uint32_t tile_ref = sp + 0x100u, locus = sp + 0x200u;
+  ST32(base, tile_ref, tile);
+  for (uint32_t i = 0; i < 0x100u; i += 4u) ST32(base, locus + i, 0u);
+  ctx->r1.u32 = sp;
+  ctx->r3.u32 = tile_ref;
+  ctx->r4.u32 = 0;
+  ctx->r7.u32 = locus;
+  ctx->f1.f64 = LDF32(base, player + kOffPosX);
+  ctx->f2.f64 = LDF32(base, player + kOffPosZ);
+  ctx->f3.f64 = radius * radius_scale;
+  sub_8210FEC0(*ctx, base);
+  ctx->r3.u32 = locus;
+  sub_823AE350(*ctx, base);
+  const bool near = ctx->r3.u32 != 0;
+  *ctx = saved;
+  return near;
+}
+
+// Where his feet are for collision. The game eases his feet up toward the
+// ground (0x178) over several frames, so going up stairs or a ladder they lag
+// the floor by 30-40 units; measure from the ground in that case.
+float ge_feet_ref(uint8_t* base, uint32_t player) {
+  const float feet = LDF32(base, player + kOffFeet), ground = LDF32(base, player + kOffGround);
+  return (std::isfinite(ground) && ground > feet) ? ground : feet;
+}
+
+// ---- Floor map following -------------------------------------------------
+// The original game moves Bond across its floor map ("stan") tile by tile: it
+// walks from his current tile across shared edges to the destination
+// (walkTilesBetweenPoints_NoCallback, sub_8210F7C8), and his height is that
+// tile's surface. Stairs and ladders are single sloped tiles, so following the
+// floor map is how they work; the drawn steps and rungs play no part.
+
+// The game's tile walk: follow the floor map from *tile, starting at (sx, sz),
+// to (dx, dz). True if it gets there without crossing a floor-map wall;
+// *tile is then the tile at the destination.
+bool ge_walk_tiles(PPCContext* ctx, uint8_t* base, uint32_t* tile, float sx, float sz, float dx,
+                   float dz) {
+  if (!*tile) return false;
+  const PPCContext saved = *ctx;
+  const uint32_t sp = ge_scratch_sp(saved);
+  const uint32_t ref = sp + 0x100u;
+  ST32(base, ref, *tile);
+  ctx->r1.u32 = sp;
+  ctx->r3.u32 = ref;
+  ctx->f1.f64 = sx;
+  ctx->f2.f64 = sz;
+  ctx->f3.f64 = dx;
+  ctx->f4.f64 = dz;
+  sub_8210F7C8(*ctx, base);
+  const bool ok = ctx->r3.u32 != 0;
+  const uint32_t end = LD32(base, ref);
+  *ctx = saved;
+  if (ok && end) *tile = end;
+  return ok && end != 0;
+}
+
+// Is (x, z) inside the tile? (stanTestPointWithinTileBoundsMaybe, sub_8210EE60)
+bool ge_in_tile(PPCContext* ctx, uint8_t* base, uint32_t tile, float x, float z) {
+  if (!tile) return false;
+  const PPCContext saved = *ctx;
+  ctx->r1.u32 = ge_scratch_sp(saved);
+  ctx->r3.u32 = tile;
+  ctx->f1.f64 = x;
+  ctx->f2.f64 = z;
+  sub_8210EE60(*ctx, base);
+  const bool in = ctx->r3.u32 != 0;
+  *ctx = saved;
+  return in;
+}
+
+// Is Bond standing on the floor map: inside his current tile, with its
+// surface within a step of his feet (not on a crate or a ledge above it)?
+// *plane = the tile's surface under him.
+bool ge_on_floor_map(PPCContext* ctx, uint8_t* base, uint32_t player, float* plane) {
+  const uint32_t tile = LD32(base, player + kOffTile);
+  const float x = LDF32(base, player + kOffPosX), z = LDF32(base, player + kOffPosZ);
+  if (!ge_in_tile(ctx, base, tile, x, z)) return false;
+  const float y = ge_tile_height(ctx, base, tile, x, z);
+  const float feet = ge_feet_ref(base, player);
+  if (!std::isfinite(y) || std::fabs(y - feet) > kStep) return false;
+  *plane = y;
+  return true;
 }
 
 // Ray test against the level collision mesh, the one the XBLA build uses for
@@ -2159,6 +2295,10 @@ const std::vector<GeSolid>& ge_solids(PPCContext* ctx, uint8_t* base, uint32_t p
     if (id < 0) break;
     const uint32_t prop = kProps + static_cast<uint32_t>(id) * 0x50u;
     if (prop == self) continue;
+    // A prop can sit in a room's list with no object/guard attached (not yet
+    // spawned, or just freed); the game's bounds function would read through
+    // the empty pointer and hang. Skip those.
+    if (!ge_readable(base, LD32(base, prop + 8u), 0x40)) continue;
     ctx->r3.u32 = prop;
     ctx->r4.u32 = kCdTypes;
     sub_820CE830(*ctx, base);  // propIsOfCdType
@@ -2294,10 +2434,13 @@ GeGround ge_ground_at(PPCContext* ctx, uint8_t* base, const std::vector<GeSolid>
       g.y = mesh_y;
       g.kind = GeTopKind::kMesh;
     }
-  } else if (steep_y > -1.0e29f && (!g.found || steep_y > g.y + kFloorBias)) {
-    // The first thing below is a steep surface well above any floor here:
-    // the spot is inside or on the side of something solid (e.g. the sloped
-    // side of a barrier, over floor data hidden under it). Not standable.
+  } else if (steep_y > -1.0e29f && (!g.found || steep_y > g.y + kFloorBias) &&
+             (!g.found || g.y < y_from - 2.5f * kStep)) {
+    // The first thing below is a steep surface well above the floor here,
+    // and that floor is more than a step below him: the spot is inside or on
+    // the side of something solid (e.g. the sloped side of a barrier, over
+    // floor data hidden under it). Not standable. When the floor data is
+    // right at his feet (stairs, open steps, ramps), it wins instead.
     g.found = false;
     g.y = -1.0e30f;
   }
@@ -2401,15 +2544,28 @@ bool ge_find_vault(PPCContext* ctx, uint8_t* base, uint32_t player, int idx, flo
   // Its top, just past the face we hit.
   float top = -1.0e30f;
   bool any = false;
+  int flat = 0;
   for (float t = d + 1.f; t <= d + 13.f; t += 4.f) {
-    float y = 0.f;
-    if (ge_mesh_top_any(ctx, base, px + fx * t, pz + fz * t, max_top + 1.f, feet + kKnee - 1.f,
-                        &y)) {
-      top = std::max(top, y);
+    GeRayHit h{};
+    if (ge_ray(ctx, base, px + fx * t, max_top + 1.f, pz + fz * t, px + fx * t, feet + kKnee - 1.f,
+               pz + fz * t, &h)) {
+      top = std::max(top, h.y);
       any = true;
+      if (h.ny >= 0.7f) ++flat;
     }
   }
   if (!any) return false;  // taller than he can reach
+  // Only things too thin to stand on get vaulted (railings, thin walls);
+  // stairs and ledges have a flat top and are climbed or walked instead.
+  if (flat >= 3) return false;
+  {
+    float ty = 0.f;
+    const float ex = px + fx * (d + 6.f), ez = pz + fz * (d + 6.f);
+    if (ge_find_floor_below(ctx, base, ex, top + 2.f, ez, &ty) && ty > feet - kStep &&
+        ty <= top + 2.f) {
+      return false;  // the floor map carries on up there (stairs, a ramp)
+    }
+  }
   // Somewhere to land beyond it, clearly below its top and clear of it.
   for (float t = d + 4.f; t <= d + 2.f * radius + 60.f; t += 4.f) {
     const float qx = px + fx * t, qz = pz + fz * t;
@@ -2546,7 +2702,7 @@ constexpr uint32_t kObjectiveLast = 0x82424BB8u;  // objective count - 1
 constexpr uint32_t kSetup = 0x82F303A0u;          // g_CurrentSetup
 
 struct GeMapTile {
-  float minx, maxx, minz, maxz, y;
+  float minx, maxx, minz, maxz, y, miny, maxy;
   uint32_t first, n;  // into GeMapLevel::pts / wall
 };
 struct GeMapLevel {
@@ -2563,6 +2719,7 @@ GeMinimapView g_map_view;
 std::chrono::steady_clock::time_point g_map_time{};
 uint64_t g_map_frame = ~0ull;
 std::vector<GeMinimapMarker> g_map_markers;
+std::vector<float> g_map_objects;  // footprints: n, then n * (x, z)
 
 void ge_map_build_level(uint8_t* base) {
   const uint32_t count = LD32(base, kStanRoomCount);
@@ -2585,7 +2742,7 @@ void ge_map_build_level(uint8_t* base) {
       const uint32_t n = LD16(base, tile + 6u) >> 12;
       const int size = static_cast<int8_t>(base[kStanTileSizes + n]);
       if (n >= 3 && n <= 12 && ge_readable(base, tile, 8u + 8u * n)) {
-        GeMapTile t{1e30f, -1e30f, 1e30f, -1e30f, 0.f,
+        GeMapTile t{1e30f, -1e30f, 1e30f, -1e30f, 0.f, 1e30f, -1e30f,
                     static_cast<uint32_t>(g_map_level.pts.size() / 2), n};
         for (uint32_t i = 0; i < n; ++i) {
           const uint32_t p = tile + 8u + 8u * i;
@@ -2599,6 +2756,8 @@ void ge_map_build_level(uint8_t* base) {
           t.maxx = std::max(t.maxx, x);
           t.minz = std::min(t.minz, z);
           t.maxz = std::max(t.maxz, z);
+          t.miny = std::min(t.miny, y);
+          t.maxy = std::max(t.maxy, y);
           t.y += y;
         }
         t.y /= static_cast<float>(n);
@@ -2628,8 +2787,9 @@ bool ge_pad_pos(uint8_t* base, uint32_t pad, float* x, float* y, float* z) {
 }
 
 void ge_map_scan(PPCContext* ctx, uint8_t* base, uint32_t player, float feet,
-                 std::vector<GeMinimapMarker>* out) {
+                 std::vector<GeMinimapMarker>* out, std::vector<float>* shapes) {
   out->clear();
+  shapes->clear();
   const PPCContext saved = *ctx;
   const uint32_t sp = ge_scratch_sp(saved);
   const uint32_t rooms = sp + 0x200u, bounds = sp + 0x400u;
@@ -2655,6 +2815,7 @@ void ge_map_scan(PPCContext* ctx, uint8_t* base, uint32_t player, float feet,
                   z = LDF32(base, prop + 20u);
       if (!std::isfinite(x) || !std::isfinite(z) || std::fabs(y - feet) > 600.f) continue;
       const uint8_t type = base[prop];
+      if (!ge_readable(base, LD32(base, prop + 8u), 0x40)) continue;  // nothing attached
       if (type == 3) {  // guard: only while it still has collision (alive)
         ST32(base, bounds, 0);
         ST32(base, bounds + 4u, 0);
@@ -2669,7 +2830,33 @@ void ge_map_scan(PPCContext* ctx, uint8_t* base, uint32_t player, float feet,
         }
       } else if (type == 4) {  // a dropped weapon
         out->push_back({x, z, kGeMapItem});
-      } else if (type == 1) {
+      }
+      // Objects and doors: their collision footprint, if they have one and
+      // it's at Bond's level (crates, desks, vehicles, doors...).
+      if (type == 1 || type == 2) {
+        ST32(base, bounds, 0);
+        ST32(base, bounds + 4u, 0);
+        STF32(base, bounds + 8u, 0.f);
+        STF32(base, bounds + 12u, 0.f);
+        ctx->r3.u32 = prop;
+        ctx->r4.u32 = bounds;
+        ctx->r5.u32 = bounds + 4u;
+        ctx->r6.u32 = bounds + 8u;
+        ctx->r7.u32 = bounds + 12u;
+        sub_820CDF80(*ctx, base);  // chraiGetCollisionBounds
+        const uint32_t poly = LD32(base, bounds);
+        const int n = static_cast<int>(LD32(base, bounds + 4u));
+        const float top = LDF32(base, bounds + 8u), bottom = LDF32(base, bounds + 12u);
+        if (poly && n >= 3 && n <= 12 && ge_readable(base, poly, 8u * static_cast<uint32_t>(n)) &&
+            top > feet - 40.f && bottom < feet + 150.f) {
+          shapes->push_back(static_cast<float>(n));
+          for (int i = 0; i < n; ++i) {
+            shapes->push_back(LDF32(base, poly + 8u * i));
+            shapes->push_back(LDF32(base, poly + 8u * i + 4u));
+          }
+        }
+      }
+      if (type == 1) {
         const uint32_t obj = LD32(base, prop + 8u);
         if (!ge_readable(base, obj, 4)) continue;
         const uint8_t ot = base[obj + 3u];
@@ -2733,7 +2920,7 @@ void ge_map_update(PPCContext* ctx, uint8_t* base, uint32_t player) {
 
   const float bx = LDF32(base, player + kOffPosX), bz = LDF32(base, player + kOffPosZ);
   const float feet = LDF32(base, player + kOffFeet);
-  if ((frame % 4u) == 0u) ge_map_scan(ctx, base, player, feet, &g_map_markers);
+  if ((frame % 4u) == 0u) ge_map_scan(ctx, base, player, feet, &g_map_markers, &g_map_objects);
 
   GeMinimapView v;
   v.bx = bx;
@@ -2745,7 +2932,9 @@ void ge_map_update(PPCContext* ctx, uint8_t* base, uint32_t player) {
   for (const GeMapTile& t : L.tiles) {
     if (t.maxx < bx - reach || t.minx > bx + reach || t.maxz < bz - reach || t.minz > bz + reach)
       continue;
-    if (t.y < feet - 110.f || t.y > feet + 130.f) continue;  // this floor only
+    // This floor only: the tile's height range has to come near his feet
+    // (a long staircase is one tall tile).
+    if (t.maxy < feet - 110.f || t.miny > feet + 130.f) continue;
     v.floors.push_back(static_cast<float>(t.n));
     for (uint32_t i = 0; i < t.n; ++i) {
       v.floors.push_back(L.pts[2u * (t.first + i)]);
@@ -2761,11 +2950,40 @@ void ge_map_update(PPCContext* ctx, uint8_t* base, uint32_t player) {
     }
   }
   v.markers = g_map_markers;
+  v.objects = g_map_objects;
   std::lock_guard<std::mutex> lock(g_map_mutex);
   g_map_view = std::move(v);
   g_map_time = std::chrono::steady_clock::now();
 }
 }  // namespace
+
+// Current weapon for the HUD label (hands[0/1].weaponnum: player+2344, hands
+// are 936 bytes; read by getCurrentPlayerWeaponId, sub_820A0D30).
+namespace {
+std::atomic<int> g_hud_right{-1}, g_hud_left{-1};
+std::atomic<int64_t> g_hud_ms{0};
+int64_t ge_now_ms() {
+  return std::chrono::duration_cast<std::chrono::milliseconds>(
+             std::chrono::steady_clock::now().time_since_epoch())
+      .count();
+}
+void ge_hud_update(uint8_t* base, uint32_t player) {
+  if (LD32(base, GE_PAUSE_FLAG) != 0 || LD32(base, player + GE_OFF_DISABLED) != 0 ||
+      LD32(base, player + GE_OFF_WATCH) != 0) {
+    return;
+  }
+  g_hud_right = static_cast<int32_t>(LD32(base, player + 2344u));
+  g_hud_left = static_cast<int32_t>(LD32(base, player + 2344u + 936u));
+  g_hud_ms = ge_now_ms();
+}
+}  // namespace
+
+bool ge_hud_weapon(int* right, int* left) {
+  if (ge_now_ms() - g_hud_ms.load() > 250) return false;
+  *right = g_hud_right.load();
+  *left = g_hud_left.load();
+  return true;
+}
 
 bool ge_minimap_get(GeMinimapView* out) {
   if (!REXCVAR_GET(ge_minimap)) return false;
@@ -2781,20 +2999,45 @@ void ge_jump(PPCRegister& r11) {
   if (!player) return;
   const int idx = ge_player_index(base, player);
   if (idx < 0) return;
-  if (ge_pad_slot_for_player(base, player) == 0) ge_map_update(ctx, base, player);
+  if (LD32(base, GE_PAUSE_FLAG) == 0 && LD32(base, player + GE_OFF_WATCH) == 0 &&
+      LD32(base, player + GE_OFF_DISABLED) == 0) {
+    g_ge_level_frame.store(g_ge_frame.load(std::memory_order_relaxed), std::memory_order_relaxed);
+  }
+  // Auto-center view: player+548 is the game's look-ahead switch
+  // (automovecentreenabled, always on in the original), +524 the centring in
+  // progress (docentreupdown, set only by look-ahead). This runs before the
+  // movement update, so with it off the game never starts re-centring.
+  if (REXCVAR_GET(ge_auto_center_view)) {
+    ST32(base, player + 548u, 1u);
+  } else {
+    ST32(base, player + 548u, 0u);
+    ST32(base, player + 524u, 0u);
+  }
+  // Menu music after a mission: the menu screens only start the folders music
+  // when this flag (the decomp's maybe_is_in_menu, 0x8272B3AC) is set, and on
+  // this build nothing sets it again after a level, so every menu after the
+  // first mission stayed silent. The original re-arms it on every return to
+  // the menus; keep it set while in a level (only menu screens read it).
+  ST32(base, 0x8272B3ACu, 1u);
+  if (ge_pad_slot_for_player(base, player) == 0) {
+    ge_map_update(ctx, base, player);
+    ge_hud_update(base, player);
+  }
 
   // Ground height for custom movement (the game only knows the floor data).
   bool free_move = ge_free_move_on(base, player);
   // On a ladder the game's own floor handling does the climbing.
-  if (free_move && ge_is_ladder_tile(ctx, base, LD32(base, player + kOffTile),
-                                     LDF32(base, player + kOffPosX),
-                                     LDF32(base, player + kOffPosZ))) {
+  // Against a ladder the game raises him itself; don't override that.
+  if (free_move && (ge_is_ladder_tile(ctx, base, LD32(base, player + kOffTile),
+                                      LDF32(base, player + kOffPosX),
+                                      LDF32(base, player + kOffPosZ)) ||
+                    ge_near_ladder(ctx, base, player, 1.2f))) {
     free_move = false;
   }
   const bool on_top = !ge_free_move_on(base, player) && ge_on_top_valid(base, player, idx);
   if (ge_free_move_on(base, player)) g_on_top[idx].active = false;
   if (free_move || on_top) {
-    const float feet = LDF32(base, player + kOffFeet);
+    const float feet = ge_feet_ref(base, player);
     const float x = LDF32(base, player + kOffPosX), z = LDF32(base, player + kOffPosZ);
     const auto& solids = ge_solids(ctx, base, player, idx);
     const GeGround g = ge_ground_at(ctx, base, solids, x, z, feet + kStep, feet - 4000.f);
@@ -2810,12 +3053,23 @@ void ge_jump(PPCRegister& r11) {
       }
       // Nothing standable right under his centre (he's at a sloped edge):
       // keep the last ground; stepping off is handled by the move.
-    } else if (g.found) {
-      STF32(base, player + kOffGround, g.y);
+    } else {
+      // On the floor map the game's own ground (his tile's surface) stands,
+      // like the original: stairs and ramps are smooth, nothing to fall
+      // through. Only an object he's standing on overrides it. Off the floor
+      // map (ledges, object tops, past its edges) the mesh and objects decide.
+      float plane = 0.f;
+      if (ge_on_floor_map(ctx, base, player, &plane)) {
+        float obj_y = 0.f;
+        STF32(base, player + kOffGround,
+              ge_object_ground(solids, x, z, plane + 2.f, feet + kStep, &obj_y) ? obj_y : plane);
+      } else if (g.found) {
+        STF32(base, player + kOffGround, g.y);
+      }
     }
   }
 
-  if (!REXCVAR_GET(ge_jump_enable)) return;
+  if (!REXCVAR_GET(ge_modern_controls)) return;
   const int slot = ge_pad_slot_for_player(base, player);
   if (slot < 0) return;
   GeMantle& m = g_mantle[idx];
@@ -2834,7 +3088,7 @@ void ge_jump(PPCRegister& r11) {
   const float vspeed = LDF32(base, player + kOffVSpeed);
   const bool grounded = feet - ground <= 2.0f && vspeed <= 0.01f;
   const bool mantle_on =
-      REXCVAR_GET(ge_mantle_enable) && LD32(base, player + kOffSpecialTile) == 0;
+      REXCVAR_GET(ge_modern_controls) && LD32(base, player + kOffSpecialTile) == 0;
 
   // A mantle in progress: once the feet clear the top, step onto it.
   if (m.active) {
@@ -2899,9 +3153,14 @@ void ge_jump(PPCRegister& r11) {
   };
 
   // In the air with A held: grab a top that's now within reach.
-  if (!grounded && mantle_on && g_jump_held[slot].load(std::memory_order_relaxed)) {
-    if (ge_find_ledge(ctx, base, player, idx, ground + kMinRise, feet + kAirReach, &m) ||
-        ge_find_vault(ctx, base, player, idx, feet + kAirReach, &m)) {
+  if (grounded) g_jumped[slot].store(false, std::memory_order_relaxed);
+  if (!grounded && mantle_on &&
+      (g_jump_held[slot].load(std::memory_order_relaxed) ||
+       g_jumped[slot].load(std::memory_order_relaxed))) {
+    const float air_reach = bond_h * kAirReachFrac;
+    if (ge_find_ledge(ctx, base, player, idx, ground + kMinRise, feet + air_reach, &m) ||
+        ge_find_vault(ctx, base, player, idx, feet + air_reach, &m)) {
+      g_jumped[slot].store(false, std::memory_order_relaxed);
       start_mantle(feet);
     }
     return;
@@ -2924,6 +3183,7 @@ void ge_jump(PPCRegister& r11) {
   }
 
   // Plain jump: launch speed v = sqrt(2 * g * height) peaks at `height`.
+  g_jumped[slot].store(true, std::memory_order_relaxed);
   const float height = static_cast<float>(REXCVAR_GET(ge_jump_height));
   const float v = std::sqrt(2.0f * kGravity * height);
   STF32(base, player + kOffVSpeed, v);
@@ -2947,7 +3207,120 @@ void ge_jump(PPCRegister& r11) {
 //     the floor tile under him is kept current for rooms and guards.
 //   r3 = offset (coord3d*: x, y, z; y unused)
 // ---------------------------------------------------------------------------
+namespace {
+// What the game does at the end of every move (the tail of
+// bondviewCalcUpdatePlayerCollision, sub_820B82A0): put Bond's prop in the
+// room of his floor tile, and check "enter this room" objectives. Free
+// movement replaces that move, so it has to do this too.
+void ge_update_player_room(PPCContext* ctx, uint8_t* base, uint32_t player) {
+  constexpr uint32_t kOffRoom = 8324u;  // s16: room the prop is registered in
+  const uint32_t prop = LD32(base, player + kOffProp);
+  if (!prop) return;
+  const PPCContext saved = *ctx;
+  ctx->r1.u32 = ge_scratch_sp(saved);
+  ctx->r3.u32 = prop;
+  ctx->r4.u32 = LD16(base, player + kOffRoom);
+  sub_820CEBD0(*ctx, base);  // take the prop out of its room
+  ST16(base, player + kOffRoom, 0xFFFFu);
+  const uint32_t obj = LD32(base, prop + 8u);
+  const uint32_t tile = LD32(base, player + kOffTile);
+  if (obj) {
+    ctx->r3.u32 = obj;
+    sub_8211E6F8(*ctx, base);
+  } else if (tile) {
+    const uint32_t room = base[tile + 3u];
+    ST16(base, player + kOffRoom, static_cast<uint16_t>(room));
+    ctx->r3.u32 = prop;
+    ctx->r4.u32 = room;
+    sub_820CEAD0(*ctx, base);  // into the room of his floor tile
+  }
+  if (tile) {
+    ctx->r3.u32 = base[tile + 3u];
+    sub_820CC590(*ctx, base);  // objectivestatusCheckRoomEntered
+  }
+  *ctx = saved;
+}
+
+// The game's auto-crouch (vents, low gaps): at the start of a move it stands
+// Bond up, then gathers the floor tiles under his body (sub_8210FEC0, the
+// decomp's stanTileDistanceRelated) and squats him if any of them is marked
+// low-ceiling (sub_823AE348 on that gathering). Free movement does the same at
+// his new spot.
+void ge_update_autocrouch(PPCContext* ctx, uint8_t* base, uint32_t player) {
+  const uint32_t tile = LD32(base, player + kOffTile);
+  if (!tile) return;
+  float radius = LDF32(base, player + kOffRadius);
+  if (!(radius > 5.f && radius < 80.f)) radius = 30.f;
+  const PPCContext saved = *ctx;
+  const uint32_t sp = ge_scratch_sp(saved);
+  const uint32_t tile_ref = sp + 0x100u, locus = sp + 0x200u;
+  ST32(base, tile_ref, tile);
+  for (uint32_t i = 0; i < 0x100u; i += 4u) ST32(base, locus + i, 0u);
+  ctx->r1.u32 = sp;
+  ctx->r3.u32 = tile_ref;
+  ctx->r4.u32 = 0;
+  ctx->r7.u32 = locus;
+  ctx->f1.f64 = LDF32(base, player + kOffPosX);
+  ctx->f2.f64 = LDF32(base, player + kOffPosZ);
+  ctx->f3.f64 = radius;
+  sub_8210FEC0(*ctx, base);
+  ctx->r3.u32 = locus;
+  sub_823AE348(*ctx, base);
+  if (ctx->r3.u32 != 0) ST32(base, player + kOffAutoCrouch, 0u);  // CROUCH_SQUAT
+  *ctx = saved;
+  // The game only flags low ceilings on floor-map tiles; on top of an object
+  // or a mesh ledge, check the ceiling directly and squat if he can't stand.
+  {
+    const float x = LDF32(base, player + kOffPosX), z = LDF32(base, player + kOffPosZ);
+    const float feet = LDF32(base, player + kOffGround);
+    const float h = ge_bond_height(base, player);
+    GeRayHit hit{};
+    if (std::isfinite(feet) && h > 60.f &&
+        ge_ray(ctx, base, x, feet + 20.f, z, x, feet + h, z, &hit) && hit.ny < -0.5f) {
+      ST32(base, player + kOffAutoCrouch, 0u);  // CROUCH_SQUAT
+    }
+  }
+}
+
+// A wall ray hit that isn't really a wall: something he could step onto,
+// i.e. a standable surface (floor map, flat mesh or object top) within a step
+// above the hit, just past the face. Stairs, open steps and curbs ahead hit
+// the knee/chest rays this way.
+bool ge_hit_is_step(PPCContext* ctx, uint8_t* base, const std::vector<GeSolid>& solids,
+                    const GeRayHit& h, float dx, float dz) {
+  const float x = h.x + dx * 3.f, z = h.z + dz * 3.f;
+  const GeGround g = ge_ground_at(ctx, base, solids, x, z, h.y + kStep, h.y - 2.f);
+  return g.found && g.y >= h.y - 2.f;
+}
+
+// Blocked by a real wall (not a step) between (ax, az) and (bx, bz) at y?
+bool ge_wall(PPCContext* ctx, uint8_t* base, const std::vector<GeSolid>& solids, float ax,
+             float az, float bx, float bz, float y) {
+  if (!ge_blocked(ctx, base, ax, az, bx, bz, y)) return false;
+  float dx = bx - ax, dz = bz - az;
+  const float l = std::sqrt(dx * dx + dz * dz);
+  if (l > 1e-4f) {
+    dx /= l;
+    dz /= l;
+  }
+  const GeRayHit h = g_last_wall;
+  return !ge_hit_is_step(ctx, base, solids, h, dx, dz);
+}
+}  // namespace
+
+bool g_in_game_move = false;  // calling the game's own move from the hook below
+
+// Diagnostics: at most a few lines a second describing which movement path ran.
+bool ge_diag_due(int which) {
+  static std::chrono::steady_clock::time_point last[4]{};
+  const auto now = std::chrono::steady_clock::now();
+  if (now - last[which] < std::chrono::milliseconds(500)) return false;
+  last[which] = now;
+  return true;
+}
+
 bool ge_on_top_move(PPCRegister& r3) {
+  if (g_in_game_move) return false;  // our own call into the game's move: let it run
   PPCContext* ctx; uint8_t* base; getcb(ctx, base);
   const uint32_t player = LD32(base, GE_BONDVIEW_CUR);
   if (!player) return false;
@@ -2958,27 +3331,100 @@ bool ge_on_top_move(PPCRegister& r3) {
 
   const float ox = LDF32(base, r3.u32 + 0), oz = LDF32(base, r3.u32 + 8);
   const float cx = LDF32(base, player + kOffPosX), cz = LDF32(base, player + kOffPosZ);
-  const float feet = LDF32(base, player + kOffFeet);
+  const float feet = ge_feet_ref(base, player);
 
   // Ladders: on one, or stepping onto one, the game's own floor movement does
   // the climbing (they're steep floor tiles, with the rungs as solid geometry).
   if (free_move) {
     const uint32_t cur_tile = LD32(base, player + kOffTile);
-    if (ge_is_ladder_tile(ctx, base, cur_tile, cx, cz)) return false;
-    // Look a little ahead in the move direction for the foot of a ladder.
+    if (ge_is_ladder_tile(ctx, base, cur_tile, cx, cz)) {
+      if (ge_diag_due(0)) REXKRNL_INFO("GEMOVE ladder: on ladder tile, game moves him");
+      return false;
+    }
+    if (ge_near_ladder(ctx, base, player, 1.2f)) {
+      if (ge_diag_due(0)) REXKRNL_INFO("GEMOVE ladder: against a ladder, game moves him");
+      return false;
+    }
+    // Look ahead in the move direction for a ladder: its floor tile rises
+    // almost straight up, so look well above his feet (and a little below,
+    // for climbing down from the top).
     const float ol = std::sqrt(ox * ox + oz * oz);
     if (ol > 1e-4f) {
       float r = LDF32(base, player + kOffRadius);
       if (!(r > 5.f && r < 80.f)) r = 30.f;
-      const float ax = cx + ox / ol * (ol + r), az = cz + oz / ol * (ol + r);
-      float ty = 0.f;
-      const uint32_t ahead = ge_find_floor_below(ctx, base, ax, feet + kStep, az, &ty);
-      if (ahead && ahead != cur_tile && ge_is_ladder_tile(ctx, base, ahead, ax, az)) return false;
+      const float dists[] = {ol + 4.f, ol + r * 0.5f, ol + r};
+      for (float d : dists) {
+        const float ax = cx + ox / ol * d, az = cz + oz / ol * d;
+        float ty = 0.f;
+        const uint32_t ahead = ge_find_floor_below(ctx, base, ax, feet + 400.f, az, &ty);
+        if (ahead && ahead != cur_tile && ty > feet - 400.f &&
+            ge_is_ladder_tile(ctx, base, ahead, ax, az)) {
+          if (ge_diag_due(0)) REXKRNL_INFO("GEMOVE ladder: ladder ahead, game moves him");
+          return false;
+        }
+      }
     }
   }
+  // On the floor map, move exactly like the original game: its own move
+  // follows the tiles (stairs, ramps, ladders), blocks on objects and updates
+  // rooms and auto-crouch. Only where it would stop him (a floor-map edge, or
+  // an object) does free movement take over and the mesh decide.
+  if (free_move) {
+    float plane = 0.f;
+    const bool moving = ox * ox + oz * oz > 0.01f;
+    if (moving && ge_diag_due(1)) {
+      const uint32_t t = LD32(base, player + kOffTile);
+      const bool in = ge_in_tile(ctx, base, t, cx, cz);
+      const float ty = t ? ge_tile_height(ctx, base, t, cx, cz) : 0.f;
+      REXKRNL_INFO("GEMOVE state: tile={:08X} in_tile={} tile_y={:.1f} feet={:.1f} ground={:.1f} "
+                   "posY={:.1f} pos=({:.1f}, {:.1f})",
+                   t, in, ty, feet, LDF32(base, player + kOffGround), LDF32(base, player + kOffPosY),
+                   cx, cz);
+    }
+    if (feet <= LDF32(base, player + kOffGround) + 2.f && ge_on_floor_map(ctx, base, player, &plane)) {
+      const uint32_t tile0 = LD32(base, player + kOffTile);
+      g_in_game_move = true;
+      sub_820B82A0(*ctx, base);  // bondviewCalcUpdatePlayerCollision
+      g_in_game_move = false;
+      const float ex = cx + ox - LDF32(base, player + kOffPosX);
+      const float ez = cz + oz - LDF32(base, player + kOffPosZ);
+      const float tol = std::max(0.05f, 0.02f * std::sqrt(ox * ox + oz * oz));
+      if (ex * ex + ez * ez <= tol * tol) return true;
+      // Walking, the game's result stands even where it stopped or slid
+      // him: its floor-map edges are what keep him out of railings and
+      // windows (thin bars and glass the mesh rays slip through). Jumping,
+      // vaulting and mantling still go past them.
+      (void)tile0;
+      return true;
+    }
+  }
+
+  // In the air, crossing out of the floor map through an opening that's
+  // closed above him (a window, not a railing): blocked like a wall.
+  if (free_move && (ox * ox + oz * oz) > 0.01f) {
+    uint32_t t = LD32(base, player + kOffTile);
+    const float nx = cx + ox, nz = cz + oz;
+    if (t && ge_in_tile(ctx, base, t, cx, cz) && !ge_walk_tiles(ctx, base, &t, cx, cz, nx, nz)) {
+      const float top = LDF32(base, player + kOffFeet) + ge_bond_height(base, player);
+      GeRayHit up{};
+      if (ge_ray(ctx, base, nx, feet + kStep, nz, nx, top, nz, &up) && up.ny < -0.3f) {
+        if (ge_diag_due(2)) {
+          REXKRNL_INFO("GEMOVE window: opening closed above at y={:.1f}, blocked", up.y);
+        }
+        return true;  // don't move this frame
+      }
+    }
+  }
+
   float radius = LDF32(base, player + kOffRadius);
   if (!(radius > 5.f && radius < 80.f)) radius = 30.f;
   const auto& solids = ge_solids(ctx, base, player, idx);
+  // Chest-height wall test follows his current height (crouching in a vent
+  // lowers it), so low ceilings don't count as walls.
+  const float body = LDF32(base, player + 0x203Cu) + LDF32(base, player + 0x1A4u) +
+                     LDF32(base, player + 0x18Cu);
+  const float chest = (body > 20.f && body < 400.f) ? std::clamp(body * 0.55f, kKnee + 6.f, kChest)
+                                                    : kChest;
 
   // Same bookkeeping the game does at the start of the move.
   STF32(base, player + kOffPrevPos + 0, cx);
@@ -3001,11 +3447,11 @@ bool ge_on_top_move(PPCRegister& r3) {
     // stop him moving along it; the centre rays still stop him walking into it.
     const float sx = -dz * radius * 0.8f, sz = dx * radius * 0.8f;
     auto side_blocked = [&](float s) {
-      if (ge_blocked(ctx, base, cx, cz, cx + s * sx, cz + s * sz, feet + kKnee)) return false;
-      return ge_blocked(ctx, base, cx, cz, nx + s * sx, nz + s * sz, feet + kKnee);
+      if (ge_wall(ctx, base, solids, cx, cz, cx + s * sx, cz + s * sz, feet + kKnee)) return false;
+      return ge_wall(ctx, base, solids, cx, cz, nx + s * sx, nz + s * sz, feet + kKnee);
     };
-    if (ge_blocked(ctx, base, cx, cz, rx, rz, feet + kKnee) ||
-        ge_blocked(ctx, base, cx, cz, rx, rz, feet + kChest) || side_blocked(1.f) ||
+    if (ge_wall(ctx, base, solids, cx, cz, rx, rz, feet + kKnee) ||
+        ge_wall(ctx, base, solids, cx, cz, rx, rz, feet + chest) || side_blocked(1.f) ||
         side_blocked(-1.f)) {
       why = "wall";
       wall = g_last_wall;
@@ -3017,7 +3463,26 @@ bool ge_on_top_move(PPCRegister& r3) {
     }
 
     const float drop_limit = feet - (free_move ? kMaxDrop : 4000.f);
-    const GeGround g = ge_ground_at(ctx, base, solids, nx, nz, feet + kStep, drop_limit);
+    GeGround g = ge_ground_at(ctx, base, solids, nx, nz, feet + kStep, drop_limit);
+    // Still on the floor map (reachable from his tile without crossing its
+    // edge, surface within a step): that tile is the ground, like the
+    // original. An object top on it still counts.
+    {
+      uint32_t t = LD32(base, player + kOffTile);
+      float plane0 = 0.f;
+      if (ge_on_floor_map(ctx, base, player, &plane0) && ge_walk_tiles(ctx, base, &t, cx, cz, nx, nz)) {
+        const float ty = ge_tile_height(ctx, base, t, nx, nz);
+        float obj_y = 0.f;
+        if (std::isfinite(ty) && std::fabs(ty - feet) <= kStep &&
+            !ge_object_ground(solids, nx, nz, ty + 2.f, feet + kStep, &obj_y)) {
+          g.found = true;
+          g.y = ty;
+          g.kind = GeTopKind::kFloor;
+          g.tile = t;
+          g.tile_y = ty;
+        }
+      }
+    }
 
     // Settle at a spot: free movement keeps the floor tile for rooms; on top,
     // walkable floor hands him back to the game.
@@ -3037,7 +3502,11 @@ bool ge_on_top_move(PPCRegister& r3) {
     // comes down. A void below is still an edge.
     const float cur_ground = LDF32(base, player + kOffGround);
     if (feet > cur_ground + 2.f) {
-      if (!g.found) {
+      // Anything at all below (floor map or level geometry) is somewhere to
+      // come down; only a true void is an edge in the air.
+      GeRayHit below{};
+      if (!g.found && !g.tile &&
+          !ge_ray(ctx, base, nx, feet + kStep, nz, nx, drop_limit, nz, &below)) {
         why = "in the air over nothing";
         return false;
       }
@@ -3062,8 +3531,8 @@ bool ge_on_top_move(PPCRegister& r3) {
       }
       if (ge_object_overlaps(solids, qx, qz, gq.y, radius)) continue;  // e.g. the crate he's leaving
       if (t > len &&
-          (ge_blocked(ctx, base, cx, cz, qx + dx * radius, qz + dz * radius, feet + kKnee) ||
-           ge_blocked(ctx, base, cx, cz, qx + dx * radius, qz + dz * radius, feet + kChest))) {
+          (ge_wall(ctx, base, solids, cx, cz, qx + dx * radius, qz + dz * radius, feet + kKnee) ||
+           ge_wall(ctx, base, solids, cx, cz, qx + dx * radius, qz + dz * radius, feet + chest))) {
         why = "wall before the landing spot";
         return false;
       }
@@ -3078,6 +3547,13 @@ bool ge_on_top_move(PPCRegister& r3) {
     return false;  // edge
   };
 
+  struct RoomUpdate {  // whatever happens below, finish like the game's move
+    PPCContext* c; uint8_t* b; uint32_t p;
+    ~RoomUpdate() {
+      ge_update_autocrouch(c, b, p);
+      ge_update_player_room(c, b, p);
+    }
+  } room_update{ctx, base, player};
   if (!try_move(ox, oz)) {
     const char* first = why;
     if (!try_move(ox, 0.f) && !try_move(0.f, oz)) {  // slide along what blocked him
@@ -3414,4 +3890,53 @@ void ge_ce_watch_sfx_save() {
   PPCContext* ctx; uint8_t* base; getcb(ctx, base);
   ctx->r4.u32 = ctx->r4.u32 + ctx->r4.u32;
   ge_cont_82184E48(*ctx, base);
+}
+
+// ---- Menu-music diagnostics (logging only) -------------------------------
+// GEMUSIC lines: every music cue play/stop/mode change, whether the cue was
+// prepared, and the menu screens' "start the folders music" flag (0x8272B3AC).
+// Repeats of the same line are collapsed into a count.
+namespace {
+void ge_music_log(const std::string& line) {
+  static std::string last;
+  static int repeats = 0;
+  static int total = 0;
+  if (line == last) {
+    ++repeats;
+    return;
+  }
+  if (total > 2000) return;  // never flood the log
+  if (repeats) REXKRNL_INFO("GEMUSIC   (previous line x{} more)", repeats);
+  REXKRNL_INFO("GEMUSIC {}", line);
+  last = line;
+  repeats = 0;
+  ++total;
+}
+uint32_t ge_music_flag(uint8_t* base) { return LD32(base, 0x8272B3ACu); }
+}  // namespace
+
+void ge_dbg_music_play(PPCRegister& r3, PPCRegister& r4) {
+  PPCContext* ctx; uint8_t* base; getcb(ctx, base);
+  ge_music_log(fmt::format("play cue {} on slot {} (from {:08X}, flag={})", (int32_t)r4.u32,
+                           r3.u32, (uint32_t)ctx->lr, ge_music_flag(base)));
+}
+void ge_dbg_music_stop(PPCRegister& r3) {
+  PPCContext* ctx; uint8_t* base; getcb(ctx, base);
+  ge_music_log(fmt::format("stop slot {} (from {:08X})", r3.u32, (uint32_t)ctx->lr));
+}
+void ge_dbg_music_mode(PPCRegister& r3) {
+  PPCContext* ctx; uint8_t* base; getcb(ctx, base);
+  ge_music_log(fmt::format("mode {} -> {} (from {:08X})", LD32(base, 0x83066750u), r3.u32,
+                           (uint32_t)ctx->lr));
+}
+void ge_dbg_music_prepared(PPCRegister& r3) {
+  ge_music_log(fmt::format("cue prepared: {}", r3.u32 ? "ok" : "FAILED"));
+}
+void ge_dbg_music_flag_read(PPCRegister& r11) {
+  PPCContext* ctx; uint8_t* base; getcb(ctx, base); (void)base;
+  ge_music_log(fmt::format("menu screen checks flag = {} (in {:08X})", r11.u32, (uint32_t)ctx->lr));
+}
+void ge_dbg_music_flag_set(PPCRegister& r11) {
+  PPCContext* ctx; uint8_t* base; getcb(ctx, base); (void)base;
+  ge_music_log(fmt::format("flag set to {} (in {:08X})", r11.u32, (uint32_t)ctx->lr));
 }

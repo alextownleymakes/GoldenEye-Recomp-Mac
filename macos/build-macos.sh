@@ -5,12 +5,19 @@
 #   cd /path/to/GoldenEye-Recomp-main
 #   bash macos/build-macos.sh                      # game files already in assets/
 #   bash macos/build-macos.sh /path/to/30BA9271... # or: the packed XBLA file
+#   bash macos/build-macos.sh /path/to/game-folder # or: a folder with default.xex
+#
+# Most people don't need this script directly: double-click
+# "GoldenEye Builder.app" in the project folder instead. It runs this script
+# for you in a window (GE_NONINTERACTIVE=1: no questions asked here).
 #
 # The XBLA download is a single extensionless "LIVE" package. Pass its path,
 # or just copy it into assets/; the script unpacks it there automatically.
 #
 # What it does:
-#   1. Checks the toolchain (Xcode 16+ command line tools, CMake, Ninja).
+#   1. Checks the toolchain (Xcode 16+ command line tools). CMake and Ninja
+#      come from Homebrew if installed, otherwise they're downloaded once into
+#      macos/.deps/tools (no Homebrew needed).
 #   2. Downloads ReXGlue SDK (the macOS-capable version) and applies the
 #      GoldenEye changes from macos/rexglue-sdk-goldeneye.patch.
 #   3. Builds and installs the SDK (once; later runs reuse it).
@@ -97,22 +104,54 @@ if [[ -z "$clang_major" || "$clang_major" -lt 16 ]]; then
        Update via System Settings > Software Update, or: softwareupdate --list"
 fi
 
-need_brew=()
-command -v cmake >/dev/null 2>&1 || need_brew+=(cmake)
-command -v ninja >/dev/null 2>&1 || need_brew+=(ninja)
-if ((${#need_brew[@]})); then
-  if command -v brew >/dev/null 2>&1; then
-    note "Installing with Homebrew: ${need_brew[*]}"
-    brew install "${need_brew[@]}"
-  else
-    die "Missing: ${need_brew[*]}. Install Homebrew (https://brew.sh) then: brew install ${need_brew[*]}"
+# CMake and Ninja: use installed ones if new enough, else a private copy in
+# macos/.deps/tools (downloaded once from the official releases).
+TOOLS_DIR="$MAC_DIR/.deps/tools"
+CMAKE_VER_DL="3.31.6"
+NINJA_VER_DL="1.12.1"
+for d in "$TOOLS_DIR/cmake/CMake.app/Contents/bin" "$TOOLS_DIR/ninja"; do
+  [[ -d "$d" ]] && PATH="$d:$PATH"
+done
+export PATH
+cmake_ok() {
+  command -v cmake >/dev/null 2>&1 || return 1
+  local v; v="$(cmake --version | head -n1 | awk '{print $3}')"
+  [[ "$(printf '%s\n3.25\n' "$v" | sort -V | head -n1)" == "3.25" ]]
+}
+if ! cmake_ok || ! command -v ninja >/dev/null 2>&1; then
+  bold "Getting build tools (CMake, Ninja; once)"
+  mkdir -p "$TOOLS_DIR"
+  if ! cmake_ok; then
+    note "Downloading CMake $CMAKE_VER_DL..."
+    rm -rf "$TOOLS_DIR/cmake" "$TOOLS_DIR/cmake.tar.gz"
+    curl -fL --retry 3 -o "$TOOLS_DIR/cmake.tar.gz" \
+      "https://github.com/Kitware/CMake/releases/download/v$CMAKE_VER_DL/cmake-$CMAKE_VER_DL-macos-universal.tar.gz" \
+      || die "Couldn't download CMake. Check your internet connection and try again."
+    mkdir -p "$TOOLS_DIR/cmake"
+    tar -xzf "$TOOLS_DIR/cmake.tar.gz" -C "$TOOLS_DIR/cmake" --strip-components 1 \
+      || die "Couldn't unpack CMake."
+    rm -f "$TOOLS_DIR/cmake.tar.gz"
+    xattr -dr com.apple.quarantine "$TOOLS_DIR/cmake" 2>/dev/null || true
+    PATH="$TOOLS_DIR/cmake/CMake.app/Contents/bin:$PATH"
   fi
+  if ! command -v ninja >/dev/null 2>&1; then
+    note "Downloading Ninja $NINJA_VER_DL..."
+    rm -rf "$TOOLS_DIR/ninja" "$TOOLS_DIR/ninja.zip"
+    curl -fL --retry 3 -o "$TOOLS_DIR/ninja.zip" \
+      "https://github.com/ninja-build/ninja/releases/download/v$NINJA_VER_DL/ninja-mac.zip" \
+      || die "Couldn't download Ninja. Check your internet connection and try again."
+    mkdir -p "$TOOLS_DIR/ninja"
+    unzip -q -o "$TOOLS_DIR/ninja.zip" -d "$TOOLS_DIR/ninja" || die "Couldn't unpack Ninja."
+    rm -f "$TOOLS_DIR/ninja.zip"
+    chmod +x "$TOOLS_DIR/ninja/ninja"
+    xattr -dr com.apple.quarantine "$TOOLS_DIR/ninja" 2>/dev/null || true
+    PATH="$TOOLS_DIR/ninja:$PATH"
+  fi
+  export PATH
 fi
+cmake_ok || die "CMake 3.25 or newer is needed and couldn't be set up."
 cmake_ver="$(cmake --version | head -n1 | awk '{print $3}')"
 note "CMake $cmake_ver, Ninja $(ninja --version)"
-if [[ "$(printf '%s\n3.25\n' "$cmake_ver" | sort -V | head -n1)" != "3.25" ]]; then
-  die "CMake 3.25+ required (found $cmake_ver). Run: brew upgrade cmake"
-fi
 command -v git >/dev/null 2>&1 || die "git is missing (comes with the Xcode Command Line Tools)."
 command -v python3 >/dev/null 2>&1 || die "python3 is missing (comes with the Xcode Command Line Tools)."
 
@@ -122,8 +161,10 @@ note "Parallel compile jobs: $JOBS (set JOBS=n to change)"
 if [[ "${free_gb:-0}" -lt 8 ]]; then
   printf '\n    \033[33mWarning:\033[0m the SDK + recompiled game need roughly 4-6 GB while building.\n'
   printf '    You have %s GB free. The build may fail part-way if the disk fills up.\n' "$free_gb"
-  read -r -p "    Continue anyway? [y/N] " ans
-  [[ "$ans" =~ ^[Yy]$ ]] || exit 1
+  if [[ "${GE_NONINTERACTIVE:-0}" != "1" ]]; then
+    read -r -p "    Continue anyway? [y/N] " ans
+    [[ "$ans" =~ ^[Yy]$ ]] || exit 1
+  fi
 fi
 
 # --- Game files ------------------------------------------------------------------
@@ -135,13 +176,41 @@ is_stfs() {  # Xbox 360 package: starts with "LIVE", "PIRS" or "CON "
   [[ "$magic" == "LIVE" || "$magic" == "PIRS" || "$magic" == "CON " ]]
 }
 PACKAGE=""
-if [[ -f "$ROOT/assets/default.xex" ]]; then
+SRC_MARK="$ROOT/assets/.ge-source"
+mkdir -p "$ROOT/assets"
+if [[ -n "${1:-}" ]]; then
+  # A chosen package file, default.xex, or a folder holding the game files.
+  SRC="$1"
+  [[ -e "$SRC" ]] || die "Not found: $SRC"
+  SRC="$(cd "$(dirname "$SRC")" && pwd)/$(basename "$SRC")"
+  [[ -f "$SRC" && "$(basename "$SRC")" == "default.xex" ]] && SRC="$(dirname "$SRC")"
+  if [[ -d "$SRC" && ! -f "$SRC/default.xex" ]]; then
+    # A download folder: look for the package inside it.
+    pkg=""
+    while IFS= read -r f; do
+      if is_stfs "$f"; then pkg="$f"; break; fi
+    done < <(find "$SRC" -type f -size +1M 2>/dev/null)
+    [[ -n "$pkg" ]] || die "No GoldenEye game files in $SRC.
+       Choose the XBLA download (the extensionless package file), or a folder
+       containing default.xex."
+    SRC="$pkg"
+  fi
+  if [[ -f "$ROOT/assets/default.xex" && -f "$SRC_MARK" && "$(cat "$SRC_MARK")" == "$SRC" ]]; then
+    note "Game files already in place (from $SRC)"
+  elif [[ -d "$SRC" ]]; then
+    [[ "$SRC" == "$ROOT/assets" ]] || {
+      note "Copying game files from $SRC"
+      cp -Rc "$SRC/." "$ROOT/assets/" 2>/dev/null || cp -R "$SRC/." "$ROOT/assets/" \
+        || die "Couldn't copy the game files from $SRC."
+    }
+    printf '%s' "$SRC" > "$SRC_MARK"
+  else
+    is_stfs "$SRC" || die "$SRC is not a GoldenEye XBLA package (or default.xex)."
+    PACKAGE="$SRC"
+    note "Will unpack $(basename "$PACKAGE") into assets/"
+  fi
+elif [[ -f "$ROOT/assets/default.xex" ]]; then
   note "Found assets/default.xex"
-elif [[ -n "${1:-}" ]]; then
-  [[ -f "$1" ]] || die "File not found: $1"
-  is_stfs "$1" || die "$1 is not an Xbox 360 package (LIVE/PIRS/CON)."
-  PACKAGE="$(cd "$(dirname "$1")" && pwd)/$(basename "$1")"
-  note "Will unpack $PACKAGE into assets/"
 else
   mkdir -p "$ROOT/assets"
   # Look anywhere under assets/ (e.g. the whole download folder copied in).
@@ -200,6 +269,7 @@ if [[ -n "$PACKAGE" ]]; then
   bold "Unpacking game package into assets/"
   "$SDK_INSTALL/bin/rexglue" extract "$PACKAGE" "$ROOT/assets"
   [[ -f "$ROOT/assets/default.xex" ]] || die "Unpacked the package but found no default.xex in it."
+  printf '%s' "$PACKAGE" > "$SRC_MARK"
   note "Unpacked. The original package file can be deleted from assets/ if you copied it there."
 fi
 
@@ -235,6 +305,7 @@ while IFS= read -r f; do
   if is_stfs "$f"; then rm -f "$APP/Contents/Resources/assets/${f#"$ROOT/assets/"}"; fi
 done < <(find "$ROOT/assets" -type f -size +1M 2>/dev/null)
 find "$APP/Contents/Resources/assets" -name .DS_Store -delete
+rm -f "$APP/Contents/Resources/assets/.ge-source"
 assets_mb="$(du -sm "$APP/Contents/Resources/assets" | awk '{print $1}')"
 note "Bundled ${assets_mb} MB of game files"
 

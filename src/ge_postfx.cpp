@@ -15,6 +15,7 @@
 #include <imgui.h>
 
 #include <algorithm>
+#include <cfloat>
 #include <cmath>
 #include <string>
 #include <vector>
@@ -161,6 +162,70 @@ bool ClipSegment(ImVec2 c, float r, ImVec2* p, ImVec2* q) {
   return true;
 }
 
+
+// Weapon names as the game shows them, by item id (ITEM_IDS in the decomp).
+const char* WeaponName(int id) {
+  static const char* const kNames[] = {
+      nullptr,               // 0 unarmed
+      nullptr,               // 1 fist
+      "Hunting Knife",       // 2
+      "Throwing Knife",      // 3
+      "PP7",                 // 4
+      "PP7 (Silenced)",      // 5
+      "DD44 Dostovei",       // 6
+      "Klobb",               // 7
+      "KF7 Soviet",          // 8
+      "ZMG (9mm)",           // 9
+      "D5K Deutsche",        // 10
+      "D5K (Silenced)",      // 11
+      "Phantom",             // 12
+      "AR33 Assault Rifle",  // 13
+      "RC-P90",              // 14
+      "Shotgun",             // 15
+      "Automatic Shotgun",   // 16
+      "Sniper Rifle",        // 17
+      "Cougar Magnum",       // 18
+      "Golden Gun",          // 19
+      "Silver PP7",          // 20
+      "Gold PP7",            // 21
+      "Moonraker Laser",     // 22
+      "Watch Laser",         // 23
+      "Grenade Launcher",    // 24
+      "Rocket Launcher",     // 25
+      "Hand Grenade",        // 26
+      "Timed Mine",          // 27
+      "Proximity Mine",      // 28
+      "Remote Mine",         // 29
+      "Detonator",           // 30
+      "Taser",               // 31
+      "Tank",                // 32
+  };
+  if (id < 0 || id >= static_cast<int>(sizeof(kNames) / sizeof(kNames[0]))) return nullptr;
+  return kNames[id];
+}
+
+// The current weapon's name, just above the game's ammo counter (bottom right).
+void DrawWeaponName(const ImGuiIO& io) {
+  int right = -1, left = -1;
+  if (!::ge_hud_weapon(&right, &left)) return;
+  const char* name = WeaponName(right);
+  if (!name) return;
+  std::string text = name;
+  if (left == right) text += " x2";
+  const float W = io.DisplaySize.x, H = io.DisplaySize.y;
+  if (W <= 0.f || H <= 0.f) return;
+  const float vw = std::min(W, H * 16.f / 9.f), vh = vw * 9.f / 16.f;
+  const float vx0 = (W - vw) * 0.5f, vy0 = (H - vh) * 0.5f;
+  ImFont* font = ImGui::GetFont();
+  const float size = vh * 0.032f;
+  const ImVec2 ts = font->CalcTextSizeA(size, FLT_MAX, 0.f, text.c_str());
+  // Right edge lines up with the counter's; sits just above it.
+  const ImVec2 pos(vx0 + vw * 0.872f - ts.x, vy0 + vh * 0.835f - ts.y * 0.5f);
+  ImDrawList* dl = ImGui::GetForegroundDrawList();
+  dl->AddText(font, size, ImVec2(pos.x + 2.f, pos.y + 2.f), IM_COL32(0, 0, 0, 170), text.c_str());
+  dl->AddText(font, size, pos, IM_COL32(235, 235, 235, 235), text.c_str());
+}
+
 void DrawMinimap(const ImGuiIO& io) {
   GeMinimapView v;
   if (!::ge_minimap_get(&v)) return;
@@ -169,8 +234,9 @@ void DrawMinimap(const ImGuiIO& io) {
   // The game picture is 16:9, centred (bars on the other axis).
   const float vw = std::min(W, H * 16.f / 9.f), vh = vw * 9.f / 16.f;
   const float vx1 = (W + vw) * 0.5f, vy1 = (H + vh) * 0.5f;
+  // Above the ammo counter and the weapon name (bottom right of the HUD).
   const float R = vh * 0.13f;
-  const ImVec2 c(vx1 - R - vh * 0.035f, vy1 - R - vh * 0.05f);
+  const ImVec2 c(vx1 - R - vh * 0.035f, vy1 - R - vh * 0.19f);
 
   const float th = v.theta * 0.017453292f;
   const float fx = -std::sin(th), fz = std::cos(th);  // forward
@@ -183,12 +249,34 @@ void DrawMinimap(const ImGuiIO& io) {
 
   ImDrawList* dl = ImGui::GetForegroundDrawList();
   dl->AddCircleFilled(c, R, IM_COL32(8, 10, 14, 150), 64);
-
+  // Levels like the Facility cut their floors into tens of thousands of tiny
+  // tiles: no anti-aliasing on the fills (it doubles the vertices), clip only
+  // what crosses the rim, and skip what's off the map entirely.
   std::vector<ImVec2> circle;
   for (int i = 0; i < 40; ++i) {
     const float a = static_cast<float>(i) * 6.2831853f / 40.f;
     circle.push_back(ImVec2(c.x + std::cos(a) * R, c.y + std::sin(a) * R));
   }
+  const ImDrawListFlags old_flags = dl->Flags;
+  dl->Flags &= ~ImDrawListFlags_AntiAliasedFill;
+  auto draw_poly = [&](std::vector<ImVec2>& poly, ImU32 fill, ImU32 outline) {
+    bool all_in = true, any_near = false;
+    for (const ImVec2& p : poly) {
+      const float d2 = (p.x - c.x) * (p.x - c.x) + (p.y - c.y) * (p.y - c.y);
+      if (d2 > R * R) all_in = false;
+      if (d2 < (R * 1.6f) * (R * 1.6f)) any_near = true;
+    }
+    if (!any_near) return;
+    if (!all_in) {
+      poly = ClipConvex(poly, circle);
+      if (poly.size() < 3) return;
+    }
+    dl->AddConvexPolyFilled(poly.data(), static_cast<int>(poly.size()), fill);
+    if (outline) {
+      dl->AddPolyline(poly.data(), static_cast<int>(poly.size()), outline, ImDrawFlags_Closed, 1.0f);
+    }
+  };
+
 
   // Floors.
   for (size_t i = 0; i < v.floors.size();) {
@@ -197,17 +285,24 @@ void DrawMinimap(const ImGuiIO& io) {
     std::vector<ImVec2> poly;
     for (int j = 0; j < n; ++j) poly.push_back(to_screen(v.floors[i + 2 * j], v.floors[i + 2 * j + 1]));
     i += 2 * n;
-    std::vector<ImVec2> clipped = ClipConvex(poly, circle);
-    if (clipped.size() >= 3) {
-      dl->AddConvexPolyFilled(clipped.data(), static_cast<int>(clipped.size()),
-                              IM_COL32(70, 78, 88, 150));
-    }
+    draw_poly(poly, IM_COL32(70, 78, 88, 150), 0);
   }
   // Walls.
   for (size_t i = 0; i + 3 < v.walls.size(); i += 4) {
     ImVec2 p = to_screen(v.walls[i], v.walls[i + 1]), q = to_screen(v.walls[i + 2], v.walls[i + 3]);
     if (ClipSegment(c, R, &p, &q)) dl->AddLine(p, q, IM_COL32(200, 206, 214, 220), 1.5f);
   }
+
+  // Objects: crates, desks, vehicles, doors (their collision footprints).
+  for (size_t i = 0; i < v.objects.size();) {
+    const int n = static_cast<int>(v.objects[i++]);
+    if (n < 3 || i + 2 * n > v.objects.size()) break;
+    std::vector<ImVec2> poly;
+    for (int j = 0; j < n; ++j) poly.push_back(to_screen(v.objects[i + 2 * j], v.objects[i + 2 * j + 1]));
+    i += 2 * n;
+    draw_poly(poly, IM_COL32(128, 136, 148, 190), IM_COL32(215, 220, 228, 220));
+  }
+  dl->Flags = old_flags;
 
   // Markers (objectives stick to the rim when off the map).
   const float s = std::max(3.f, R * 0.035f);
@@ -251,8 +346,9 @@ PostFxOverlay::PostFxOverlay(rex::ui::ImGuiDrawer* drawer) : rex::ui::ImGuiDialo
 PostFxOverlay::~PostFxOverlay() = default;
 
 void PostFxOverlay::OnDraw(ImGuiIO& io) {
-  // Minimap (bottom right), independent of post-FX.
+  // Minimap and weapon name (bottom right), independent of post-FX.
   DrawMinimap(io);
+  DrawWeaponName(io);
 
   // Quicksave / quickload message (top centre), independent of post-FX.
   {

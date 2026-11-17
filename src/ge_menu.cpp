@@ -691,43 +691,39 @@ void GeMenuDialog::DrawContent(ImGuiIO& /*io*/) {
       ImGui::Spacing();
       ImGui::Separator();
       ImGui::Spacing();
-      ImGui::TextColored(ImColor(kTitle), "SPRINT");
-      ImGui::Spacing();
-      // Sprint mode -- live (the input poll reads ge_sprint_toggle every poll).
-      {
-        static const char* const kSprintModes[] = {"Toggle", "Hold"};
-        int sprint_mode = GetCvarB("ge_sprint_toggle") ? 0 : 1;
-        if (ImGui::Combo("Sprint Mode", &sprint_mode, kSprintModes, 2)) {
-          SetCvarB("ge_sprint_toggle", sprint_mode == 0);
-          if (callbacks_.persist_config) callbacks_.persist_config();
-        }
-        ImGui::TextColored(ImColor(kInkDim),
-                           sprint_mode == 0
-                               ? "(L3 / sprint key turns sprint on or off; stopping turns it off)"
-                               : "(sprint while L3 / sprint key is held)");
-      }
-
-      ImGui::Spacing();
-      ImGui::Separator();
-      ImGui::Spacing();
-      ImGui::TextColored(ImColor(kTitle), "JUMP");
+      ImGui::TextColored(ImColor(kTitle), "CONTROLS");
       ImGui::Spacing();
       {
-        bool jump = GetCvarB("ge_jump_enable");
-        if (ImGui::Checkbox("Jump", &jump)) {
-          SetCvarB("ge_jump_enable", jump);
+        bool modern = GetCvarB("ge_modern_controls");
+        if (ImGui::Checkbox("Modern controls", &modern)) {
+          SetCvarB("ge_modern_controls", modern);
           if (callbacks_.persist_config) callbacks_.persist_config();
         }
         ImGui::TextColored(ImColor(kInkDim),
-                           "(A / Cross / Space jumps; A still opens doors as normal)");
-        bool mantle = GetCvarB("ge_mantle_enable");
-        if (ImGui::Checkbox("Mantle onto ledges", &mantle)) {
-          SetCvarB("ge_mantle_enable", mantle);
+                           modern ? "(A / Cross: jump, mantle onto ledges, vault railings; "
+                                    "X / Square: open doors, use things; B / Circle: reload; "
+                                    "Y / Triangle: swap weapons; L3: sprint. Menus unchanged)"
+                                  : "(the original game's controls: no jump or sprint)");
+        bool center = GetCvarB("ge_auto_center_view");
+        if (ImGui::Checkbox("Auto-center view when moving", &center)) {
+          SetCvarB("ge_auto_center_view", center);
           if (callbacks_.persist_config) callbacks_.persist_config();
         }
         ImGui::TextColored(ImColor(kInkDim),
-                           "(jump at a ledge, barrier or object to climb onto it, or at a railing "
-                           "to vault it; hold A mid-air to grab one)");
+                           center ? "(walking eases the view back to level, as in the original)"
+                                  : "(the view stays where you last aimed it)");
+        if (modern) {
+          static const char* const kSprintModes[] = {"Toggle", "Hold"};
+          int sprint_mode = GetCvarB("ge_sprint_toggle") ? 0 : 1;
+          if (ImGui::Combo("Sprint Mode", &sprint_mode, kSprintModes, 2)) {
+            SetCvarB("ge_sprint_toggle", sprint_mode == 0);
+            if (callbacks_.persist_config) callbacks_.persist_config();
+          }
+          ImGui::TextColored(ImColor(kInkDim),
+                             sprint_mode == 0
+                                 ? "(L3 / sprint key turns sprint on or off; stopping turns it off)"
+                                 : "(sprint while L3 / sprint key is held)");
+        }
         bool free_move = GetCvarB("ge_free_move");
         if (ImGui::Checkbox("Free movement", &free_move)) {
           SetCvarB("ge_free_move", free_move);

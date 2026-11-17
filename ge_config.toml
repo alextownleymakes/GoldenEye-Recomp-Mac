@@ -335,3 +335,67 @@ name = "ge_ce_watch_sfx_save"
 registers = []
 after_instruction = false
 jump_address = 0x820C81B0
+
+# --- Menu-music diagnostics (logging only; nothing is changed) ---
+# music cue play (slot r3, cue r4); cue 23 = mission folders music
+[[midasm_hook]]
+address = 0x82144BA8
+name = "ge_dbg_music_play"
+registers = ["r3", "r4"]
+# music cue stop (slot r3)
+[[midasm_hook]]
+address = 0x82144A80
+name = "ge_dbg_music_stop"
+registers = ["r3"]
+# music mode change (mode r3)
+[[midasm_hook]]
+address = 0x82144C60
+name = "ge_dbg_music_mode"
+registers = ["r3"]
+# result of preparing the cue in the play function (0 = failed)
+[[midasm_hook]]
+address = 0x82144C14
+name = "ge_dbg_music_prepared"
+registers = ["r3"]
+# reads of the "start menu music" flag in menu screens (r11 = flag)
+[[midasm_hook]]
+address = 0x820F0CF8
+name = "ge_dbg_music_flag_read"
+registers = ["r11"]
+after_instruction = true
+[[midasm_hook]]
+address = 0x820EE260
+name = "ge_dbg_music_flag_read"
+registers = ["r11"]
+after_instruction = true
+[[midasm_hook]]
+address = 0x82103604
+name = "ge_dbg_music_flag_read"
+registers = ["r11"]
+after_instruction = true
+[[midasm_hook]]
+address = 0x820EEB4C
+name = "ge_dbg_music_flag_read"
+registers = ["r11"]
+after_instruction = true
+[[midasm_hook]]
+address = 0x820ED794
+name = "ge_dbg_music_flag_read"
+registers = ["r11"]
+after_instruction = true
+# writes that set the flag (r11 = 1)
+[[midasm_hook]]
+address = 0x82108144
+name = "ge_dbg_music_flag_set"
+registers = ["r11"]
+after_instruction = true
+[[midasm_hook]]
+address = 0x820ED1EC
+name = "ge_dbg_music_flag_set"
+registers = ["r11"]
+after_instruction = true
+[[midasm_hook]]
+address = 0x820EAA28
+name = "ge_dbg_music_flag_set"
+registers = ["r11"]
+after_instruction = true

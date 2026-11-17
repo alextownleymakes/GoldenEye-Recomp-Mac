@@ -5,11 +5,15 @@ This folder turns the project into a native macOS app (`GoldenEye.app`) for Appl
 ## What you need
 
 * macOS 14 or newer, with the **Xcode 16+ Command Line Tools** (`xcode-select --install`). The full Xcode app isn't required.
-* **Homebrew**, used for `cmake` and `ninja`. The script installs them if they're missing.
+* CMake and Ninja: used from Homebrew if installed, otherwise downloaded once into `macos/.deps/tools` (no Homebrew needed).
 * The GoldenEye 007 (XBLA) game files, which you supply yourself. Either copy the packed download (the single extensionless file, e.g. `30BA9271…`) into `assets/`, or pass its path to the script; it gets unpacked automatically. Already-unpacked files (`assets/default.xex` + data) work too.
 * About **4–6 GB of free disk space** while building, plus an internet connection on the first run (the SDK and its dependencies are downloaded). Afterwards you can delete `macos/.deps/` and `out/` to get that space back; only `GoldenEye.app` is needed to play.
 
 ## Build
+
+The easy way: double-click **GoldenEye Builder** in the project folder. It installs what's missing, asks for your game files (and remembers them), builds with a progress bar, and checks GitHub for updates. See the main README for the one-time macOS security step.
+
+From Terminal:
 
 ```sh
 cd ~/Downloads/GoldenEye-Recomp-main
@@ -45,25 +49,24 @@ Press **L3** (click the left stick) to sprint while moving forward. By default i
 
 * `ge_sprint_speed` in `ge.toml` sets how fast (default `2.0`; normal running is 1.0 and the game's own "full speed" after 3 seconds is 1.25).
 * **Sprint Mode** (pause menu → Controls), or `ge_sprint_toggle` in `ge.toml`: Toggle (default, `true`) or Hold (`false`).
-* `ge_sprint_enable = false` turns it off and gives L3 back to crouching.
+* Sprint is part of **Modern controls** (pause menu → Controls), or `ge_modern_controls = false`; turning that off gives L3 back to crouching.
 
 ## Jump (mod)
 
-Press **A** (Cross on PlayStation, **Space** on the keyboard) to jump. A still does what it always did (opens doors, confirms menus), so pressing it at a door opens the door and also hops. Bond jumps and falls with the game's own falling physics, including the small dip on landing.
+Press **A** (Cross on PlayStation, **Space** on the keyboard) to jump. With Modern controls on, A only jumps in gameplay: doors and other actions move to **X / Square**, reload to **B / Circle**, and **Y / Triangle** swaps weapons. Menus keep the original buttons. Bond jumps and falls with the game's own falling physics, including the small dip on landing.
 
 * `ge_jump_height` in `ge.toml` sets how high (default `85`; Bond is about 170 units tall).
-* **Jump** (pause menu → Controls), or `ge_jump_enable = false` in `ge.toml`, turns it off.
+* **Modern controls** (pause menu → Controls), or `ge_modern_controls = false` in `ge.toml`, turns jump, mantling and sprint off together and restores the original buttons.
 
-**Mantling.** Jump while facing something with a flat top within reach and Bond climbs onto it. You can also jump and hold A as you rise past one. That covers raised floor and ledges, solid level pieces like the Dam's concrete barriers, bunkers and low walls, and objects like desks, crates and drums. The top has to be higher than a step and no taller than Bond himself by default, wide enough to stand on, with nothing in the way over the edge and room above it. Up to half his height he hops up with the game's own physics; anything taller he pulls himself up onto in a steady climb, with the view dipping toward the ledge and coming back up as he gets over.
+**Mantling.** Jump while facing something with a flat top within reach and Bond climbs onto it. In the air after a jump (or holding A) he also grabs any ledge that comes within about three-quarters of his height above his feet, so you can jump across a gap onto something. That covers raised floor and ledges, solid level pieces like the Dam's concrete barriers, bunkers and low walls, and objects like desks, crates and drums. The top has to be higher than a step and no taller than Bond himself by default, wide enough to stand on, with nothing in the way over the edge and room above it. Up to half his height he hops up with the game's own physics; anything taller he pulls himself up onto in a steady climb, with the view dipping toward the ledge and coming back up as he gets over.
 
 Railings and anything else too thin to stand on get vaulted instead: jump at one and he goes over and lands on the other side (on stair landings, ship decks, watchtowers). Walking off the edge of anything he's standing on sets him down a body-width clear of it.
 
 Once he's on a barrier or an object he can walk around on it, jump, and drop off the edge back onto the floor. Shoot the desk he's standing on until it blows up and he falls. Those tops aren't part of the game's walkable floor, so while he's up there this mod moves him: walls come from the same collision bullets use, and objects from their own collision shapes. He goes back to the game's movement as soon as he steps onto real floor. He can't step off a top onto ground the normal game doesn't let you walk on; that edge acts like a wall.
 
 * `ge_mantle_reach` in `ge.toml` sets the highest top he can climb, in percent of his height (default `100`).
-* **Mantle onto ledges** (pause menu → Controls), or `ge_mantle_enable = false`, turns it off and leaves plain jumping.
 
-**Free movement (on by default).** **Free movement** (pause menu → Controls), or `ge_free_move = false` to turn it off, replaces the game's floor map with real collision everywhere. Walls, doors, glass, guards and objects block him exactly where they are; he can walk, jump and drop between floor, barriers, crates and desks with no transitions; and he only stops at a drop deeper than about four times his height or into nothing. Ladders still climb the game's own way. The floor map is still followed in the background so the right rooms are drawn and guards know where he is. Because the movement code is this mod's rather than Rare's, sliding along walls won't feel exactly like the original, and it may let you reach places the levels weren't built for. Turn it off for the original movement (mantling then works with a hand-off at the edges of what you climb).
+**Free movement (on by default).** **Free movement** (pause menu → Controls), or `ge_free_move = false` to turn it off, keeps the game's own movement while Bond is on the floor map (so stairs, ramps and ladders work as in the original) and switches to real collision wherever the original would stop him or he's off the floor map. Walls, doors, glass, guards and objects block him exactly where they are; he can walk, jump and drop between floor, barriers, crates and desks with no transitions; and he only stops at a drop deeper than about four times his height or into nothing. The floor map is still followed in the background so the right rooms are drawn and guards know where he is. Because the movement code is this mod's rather than Rare's, sliding along walls won't feel exactly like the original, and it may let you reach places the levels weren't built for. Turn it off for the original movement (mantling then works with a hand-off at the edges of what you climb).
 
 If anything misbehaves, the log has `GEMANTLE` lines.
 
@@ -110,7 +113,7 @@ Three additions were made during the port:
 
 ## Minimap (mod)
 
-A circular minimap sits in the bottom-right corner. It's drawn from the level's own floor map, so it shows the walkable floor and walls of the floor Bond is on, turning and sliding around him (he's the white arrow in the middle, always facing up).
+A circular minimap sits in the bottom-right corner. It's drawn from the level's own floor map, so it shows the walkable floor and walls of the floor Bond is on, plus the footprints of objects at his level (crates, desks, vehicles, doors), turning and sliding around him (he's the white arrow in the middle, always facing up).
 
 * **Red dots:** guards (only living ones).
 * **Grey X:** things on the ground: weapons, keys, body armour.

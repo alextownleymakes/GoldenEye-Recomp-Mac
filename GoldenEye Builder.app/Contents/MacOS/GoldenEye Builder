@@ -1,0 +1,34 @@
+#!/bin/bash
+# GoldenEye Builder launcher. Makes sure Apple's developer tools are installed
+# (they're needed to build the game anyway), compiles the builder window from
+# Resources/Builder.swift once (again only when it changes), then runs it.
+
+CONTENTS="$(cd "$(dirname "$0")/.." && pwd)"
+BUNDLE="$(cd "$CONTENTS/.." && pwd)"
+SRC="$CONTENTS/Resources/Builder.swift"
+SUPPORT="$HOME/Library/Application Support/GoldenEye Builder"
+BIN="$SUPPORT/GoldenEyeBuilder"
+mkdir -p "$SUPPORT"
+
+alert() {
+  /usr/bin/osascript -e "display dialog \"$1\" with title \"GoldenEye Builder\" buttons {\"OK\"} default button 1 with icon note" >/dev/null 2>&1
+}
+
+if ! /usr/bin/xcode-select -p >/dev/null 2>&1; then
+  /usr/bin/xcode-select --install >/dev/null 2>&1
+  alert "GoldenEye Builder needs Apple's free developer tools to build the game.\n\nA window asking to install the command line developer tools will appear: click Install and wait for it to finish (usually 5 to 15 minutes).\n\nThen open GoldenEye Builder again."
+  exit 0
+fi
+
+SUM="$(/usr/bin/shasum -a 256 "$SRC" | awk '{print $1}')"
+if [[ ! -x "$BIN" || "$(cat "$BIN.sha" 2>/dev/null)" != "$SUM" ]]; then
+  if ! out="$(/usr/bin/xcrun swiftc -swift-version 5 -O -o "$BIN.tmp" "$SRC" 2>&1)"; then
+    printf '%s\n' "$out" > "$SUPPORT/compile-error.log"
+    alert "The builder couldn't start: its window failed to compile. Your developer tools may be out of date: update them in System Settings, General, Software Update, then try again.\n\nDetails are in: Library/Application Support/GoldenEye Builder/compile-error.log"
+    exit 1
+  fi
+  mv -f "$BIN.tmp" "$BIN"
+  printf '%s' "$SUM" > "$BIN.sha"
+fi
+
+exec "$BIN" "$BUNDLE"
