@@ -51,6 +51,13 @@ die()  { printf '\n\033[31mError:\033[0m %s\n' "$*" >&2; exit 1; }
 [[ "$(uname -s)" == "Darwin" ]] || die "This script is for macOS."
 
 # --- Architecture / configuration --------------------------------------------
+# The GoldenEye app can run under Rosetta (its launcher is a script), and then
+# everything it starts builds for Intel. On Apple Silicon, build for Apple
+# Silicon unless ARCH asks for something else.
+USER_ARCH="${ARCH:-}"
+if [[ -z "$USER_ARCH" && "$(sysctl -n sysctl.proc_translated 2>/dev/null || true)" == "1" ]]; then
+  exec /usr/bin/arch -arm64 /bin/bash "${BASH_SOURCE[0]}" "$@"
+fi
 ARCH="${ARCH:-$(uname -m)}"
 case "$ARCH" in
   arm64)  PARCH="arm64" ;;
@@ -69,6 +76,18 @@ SDK_BUILD="$SDK_DIR/out/build/$SDK_PRESET"
 SDK_INSTALL="$SDK_DIR/out/install/$SDK_PRESET"
 GAME_PRESET="mac-$PARCH-$CFG"
 GAME_BUILD="$ROOT/out/build/$GAME_PRESET"
+
+# Only one architecture is needed. Remove the other one's build output (an
+# Intel copy left by builds that ran under Rosetta takes several GB).
+if [[ -z "$USER_ARCH" ]]; then
+  OTHER_PARCH="$([[ "$PARCH" == arm64 ]] && echo amd64 || echo arm64)"
+  for d in "$SDK_DIR/out/build/mac-$OTHER_PARCH" "$SDK_DIR/out/install/mac-$OTHER_PARCH" \
+           "$ROOT/out/build/mac-$OTHER_PARCH-"*; do
+    [[ -d "$d" ]] || continue
+    note "Removing the unused $OTHER_PARCH build: ${d#"$ROOT"/}"
+    rm -rf "$d"
+  done
+fi
 
 # CMake build folders remember the absolute path they were made in. If the
 # project folder was moved or renamed, throw the stale one away (it has to be
@@ -235,7 +254,16 @@ if [[ ! -d "$SDK_DIR/.git" ]]; then
   git -C "$SDK_DIR" checkout -q FETCH_HEAD
 fi
 note "Fetching SDK submodules (first run downloads a few hundred MB)..."
-git -C "$SDK_DIR" submodule update --init --depth 1 --jobs 8
+# Everything except the SDK's unit-test framework (the tests aren't built).
+SDK_SUBMODULES=()
+while read -r _ sub_path; do
+  [[ "$sub_path" == thirdparty/catch2 ]] || SDK_SUBMODULES+=("$sub_path")
+done < <(git -C "$SDK_DIR" config -f .gitmodules --get-regexp '^submodule\..*\.path$')
+git -C "$SDK_DIR" submodule update --init --depth 1 --jobs 8 -- "${SDK_SUBMODULES[@]}"
+if [[ -e "$SDK_DIR/thirdparty/catch2/.git" ]]; then
+  git -C "$SDK_DIR" submodule deinit -q -f thirdparty/catch2 || true
+  rm -rf "$SDK_DIR/.git/modules/thirdparty/catch2"
+fi
 
 if git -C "$SDK_DIR" apply --reverse --check "$PATCH_FILE" >/dev/null 2>&1; then
   note "GoldenEye SDK patch already applied"
@@ -260,7 +288,28 @@ if [[ -f "$SDK_INSTALL/.ge-installed" && -x "$SDK_INSTALL/bin/rexglue" ]]; then
 else
   bold "Building ReXGlue SDK (this is the long part, ~15-40 min)"
   drop_stale_build "$SDK_BUILD" "$SDK_DIR" || true
-  (cd "$SDK_DIR" && cmake --preset "$SDK_PRESET")
+  # MoltenVK downloads SPIRV-Cross and cereal while configuring, and because
+  # they're pinned to exact commits its downloader takes their whole history.
+  # Fetch just those commits here and point it at them instead.
+  MVK_REVS="$SDK_DIR/thirdparty/moltenvk/ExternalRevisions"
+  mvk_args=()
+  for spec in "SPIRV-Cross https://github.com/KhronosGroup/SPIRV-Cross.git" \
+              "cereal https://github.com/USCiLab/cereal.git"; do
+    read -r dep_name dep_url <<< "$spec"
+    dep_rev="$(tr -d '[:space:]' < "$MVK_REVS/${dep_name}_repo_revision" 2>/dev/null || true)"
+    [[ -n "$dep_rev" ]] || continue  # unknown layout: let MoltenVK fetch it itself
+    dep_dir="$MAC_DIR/.deps/moltenvk-deps/$dep_name"
+    if [[ "$(git -C "$dep_dir" rev-parse HEAD 2>/dev/null)" != "$dep_rev" ]]; then
+      rm -rf "$dep_dir"
+      mkdir -p "$dep_dir"
+      { git -C "$dep_dir" init -q && git -C "$dep_dir" remote add origin "$dep_url" \
+          && git -C "$dep_dir" fetch -q --depth 1 origin "$dep_rev" \
+          && git -C "$dep_dir" checkout -q FETCH_HEAD; } \
+        || die "Couldn't download $dep_name (needed by MoltenVK). Check your internet connection and try again."
+    fi
+    mvk_args+=("-DCPM_${dep_name}_SOURCE=$dep_dir")
+  done
+  (cd "$SDK_DIR" && cmake --preset "$SDK_PRESET" ${mvk_args[@]+"${mvk_args[@]}"})
   (cd "$SDK_DIR" && cmake --build --preset "$SDK_PRESET-release" -j "$JOBS")
   cmake --install "$SDK_BUILD" --config Release --prefix "$SDK_INSTALL"
   touch "$SDK_INSTALL/.ge-installed"

@@ -54,6 +54,20 @@ die()  { printf '\n\033[31mError:\033[0m %s\n' "$*" >&2; exit 1; }
 
 [[ "$(uname -s)" == "Darwin" ]] || die "This script is for macOS."
 
+# The GoldenEye app can run under Rosetta (its launcher is a script), and then
+# everything it starts builds for Intel. On Apple Silicon, build natively.
+if [[ "$(sysctl -n sysctl.proc_translated 2>/dev/null || true)" == "1" ]]; then
+  exec /usr/bin/arch -arm64 /bin/bash "${BASH_SOURCE[0]}" "$@"
+fi
+# A build left from the other architecture (e.g. an Intel one made under
+# Rosetta) can't be reused: start the compiled parts over.
+built_arch="$(lipo -archs "$ROOT/out/build/n64/GoldenEye64" 2>/dev/null || true)"
+if [[ -n "$built_arch" && "$built_arch" != "$(uname -m)" ]]; then
+  note "Removing the $built_arch build to rebuild for $(uname -m)"
+  rm -rf "$ROOT/out/build/n64" "$DEPS/sdl2" "$DEPS/SDL2-$SDL_VERSION/build" "$RECOMP_DIR/build" \
+         "$RECOMP_DIR/.goldeneye-stamp"
+fi
+
 if [[ -z "${JOBS:-}" ]]; then JOBS="$(sysctl -n hw.ncpu)"; fi
 
 # --- 1. Toolchain ------------------------------------------------------------
