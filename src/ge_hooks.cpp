@@ -250,7 +250,19 @@ void ge_watchdog_thread() {
       // release the CP). The render is parked waiting on GPU completion ->
       // deadlock. Write 0 to release the CP: it drains the buffer, delivers the
       // completion, the render resumes. Memory-only, no interrupt (safe).
-      if (stall >= 2 && dev && idblk && idblk < 0xFFFFFFFEu) {
+      //
+      // Only when the CP really is parked mid-buffer (read pointer behind the
+      // write pointer). With the ring drained nothing is waiting on idblk, and
+      // idblk+0 then holds the GPU-completion count the game paces itself by:
+      // zeroing it makes the game believe the GPU fell thousands of frames
+      // behind, so it stops rendering for good (a permanent frozen picture).
+      const bool cp_parked = (rpi != wpi);
+      if (stall == 2 && dev && idblk && idblk < 0xFFFFFFFEu) {
+        REXKRNL_INFO("GEWATCHDOG BEFORE: ring rpi={:#x} wpi={:#x} [{}] | idblk+0={} submit={} presented={} target={} skipbit={}",
+                     rpi, wpi, cp_parked ? "PENDING" : "DRAINED", LD32(base, idblk + 0), submit,
+                     LD32(base, dev + 16552), LD32(base, dev + 10908), base[dev + 10941] & 2);
+      }
+      if (stall >= 2 && cp_parked && dev && idblk && idblk < 0xFFFFFFFEu) {
         ST32(base, idblk, 0u);  // release the CP's WAIT_REG_MEM semaphore
         if (!recover_fired) {
           recover_fired = true;

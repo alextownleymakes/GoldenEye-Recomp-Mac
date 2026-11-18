@@ -1,0 +1,64 @@
+# N64Recomp configuration for GoldenEye 007 (NTSC-U ROM, sha1 abe01e4a...).
+# Symbols (function names, addresses and sizes) come from ge007.u.syms.toml,
+# exported once from a build of the GoldenEye decompilation, so building only
+# needs the player's own ROM.
+[input]
+entrypoint = 0x80000400
+symbols_file_path = "ge007.u.syms.toml"
+rom_file_path = "ge007.recomp.z64"
+output_func_path = "RecompiledFuncs"
+functions_per_output_file = 100
+
+[patches]
+# Game functions that share a name with a C library function the generated
+# code can see: renamed to <name>_recomp.
+renamed = ["strtol", "strncpy", "strncmp", "toupper", "isdigit", "isalpha", "isspace", "acos", "asin"]
+
+# OS internals (exceptions, interrupts, TLB, caches) that the recompiler
+# doesn't already know about: the runtime replaces them.
+ignored = [
+  "__osDispatchThreadSave",
+  "enqueueRunning",
+  "initTLBPrepareContext",
+  "resolve_TLBaddress_for_InvalidHit",
+  "boot",
+  "counter",
+  "ipl3_font",
+  "sw2",
+  "swl",
+  "next_interrupt",
+  "IP6_Hdlr",
+  "IP7_Hdlr",
+  "cart",
+  "rcp",
+  "prenmi",
+  "redispatch",
+  "__osGetCurrFaultedThread",
+]
+
+# musicTrack{1,2,3}Play wait in a loop for the sequence player to stop:
+#   while (alCSPGetState(seqp)) ;
+# On the console the audio thread interrupts that loop and stops the player.
+# Here game threads only switch when one waits, so let the others run on
+# each pass.
+[[patches.hook]]
+func = "musicTrack1Play"
+before_vram = 0x70006ED4
+text = "    yield_self_1ms(rdram);"
+
+[[patches.hook]]
+func = "musicTrack2Play"
+before_vram = 0x7000725C
+text = "    yield_self_1ms(rdram);"
+
+[[patches.hook]]
+func = "musicTrack3Play"
+before_vram = 0x700075E4
+text = "    yield_self_1ms(rdram);"
+
+# cosf is three instructions that fall through into sinf (cos x = sin(x + pi/2)).
+# The recompiler ends the function there, so finish it by calling sinf.
+[[patches.hook]]
+func = "cosf_recomp"
+before_vram = 0x7F057EA8
+text = "    ctx->f12.fl = ctx->f12.fl + ctx->f10.fl;\n    sinf_recomp(rdram, ctx);\n    return;"

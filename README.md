@@ -5,7 +5,7 @@ A native **macOS** build of [SunJaycy's GoldenEye 007 PC Recompilation](https://
 The original's features carry over: keyboard and mouse, online multiplayer, graphics settings (including every Post-FX slider) and higher frame rates. This fork adds:
 
 * **A one-command Mac build.** Drop in your game file and run one script.
-* **A self-contained app.** The game files are packed inside `GoldenEye.app`; drag it to Applications.
+* **One app to build and play.** The GoldenEye app builds the game from your files, keeps it inside itself, and plays it with one click.
 * **Controller support.** Xbox, PlayStation (DualSense/DualShock) and other controllers work over Bluetooth or USB.
 * **Modern controls (mod, on by default).** One switch under **Controls → Modern controls** in the pause menu turns on sprint, jump and mantling, and the modern button layout in gameplay: **A / Cross** jumps, **X / Square** opens doors and uses things, **B / Circle** reloads, **Y / Triangle** swaps weapons. Menus keep the original buttons. Off = the original game's controls.
 * **No auto-centering view (mod).** Moving no longer eases the view back to level; it stays where you last aimed. Turn the original behaviour back on under **Controls → Auto-center view when moving** (`ge_auto_center_view = true`).
@@ -24,8 +24,10 @@ No game files are included or linked. You must supply the GoldenEye 007 Xbox 360
 * A Mac with Apple Silicon (M1 or later) or Intel, running **macOS 14 Sonoma or newer**
 * About **6 GB of free disk space** while building (the finished app is about 780 MB)
 * An internet connection for the first build (the build tools are downloaded)
-* **Your own GoldenEye 007 XBLA game files.** This is the Xbox Live Arcade package: a single large file with no extension (about 740 MB), usually found at
-  `0000000000000000/584108A9/000D0000/<long hex name>`. A folder with the already-unpacked files (`default.xex` plus its data) also works.
+* Your own copy of the game, for either version (or both):
+  * **Xbox 360 version:** the GoldenEye 007 XBLA package, a single large file with no extension (about 740 MB), usually found at
+    `0000000000000000/584108A9/000D0000/<long hex name>`. A folder with the already-unpacked files (`default.xex` plus its data) also works.
+  * **Nintendo 64 version:** a GoldenEye 007 **(USA)** ROM (`.z64`, `.v64` or `.n64`). The N64 version is new: it's the original game recompiled to run natively, with graphics through [RT64](https://github.com/rt64/rt64). Expect rough edges.
 
 Everything else (Apple's developer tools, CMake, Ninja) is installed for you the first time.
 
@@ -33,44 +35,66 @@ Everything else (Apple's developer tools, CMake, Ninja) is installed for you the
 
 1. **Download this project** with the green **Code → Download ZIP** button on GitHub, and unzip it (double-click the ZIP). Keep the folder somewhere you'll find it again, like Documents.
 
-2. **Open `GoldenEye Builder`** in the project folder (double-click it). The first time, macOS blocks it because it isn't from the App Store or an identified developer. To allow it (once):
+2. **Open the `GoldenEye` app** in the project folder (double-click it). The first time, macOS blocks it because it isn't from the App Store or an identified developer. To allow it (once):
 
    **macOS 15 Sequoia and newer**
-   1. Double-click **GoldenEye Builder**. A message says Apple couldn't verify it. Click **Done** (not Move to Trash).
+   1. Double-click **GoldenEye**. A message says Apple couldn't verify it. Click **Done** (not Move to Trash).
    2. Open **System Settings → Privacy & Security** and scroll to the bottom.
-   3. Next to *"GoldenEye Builder" was blocked to protect your Mac*, click **Open Anyway**.
+   3. Next to *"GoldenEye" was blocked to protect your Mac*, click **Open Anyway**.
    4. Confirm with **Open Anyway** again and your password or Touch ID.
 
    **macOS 14 Sonoma**
-   1. **Right-click** (or Control-click) **GoldenEye Builder** and choose **Open**.
+   1. **Right-click** (or Control-click) **GoldenEye** and choose **Open**.
    2. Click **Open** in the message that appears.
 
    After that it opens normally with a double-click.
 
-3. **If asked, install Apple's developer tools.** The first time, the builder asks macOS to install the free *command line developer tools*. Click **Install**, wait for it to finish (usually 5–15 minutes), then open GoldenEye Builder again.
+3. **If asked, install Apple's developer tools.** The first time, the app asks macOS to install the free *command line developer tools*. Click **Install**, wait for it to finish (usually 5–15 minutes), then open GoldenEye again.
 
-4. **Choose your game files.** Click **Choose…** and select the XBLA package file (or a folder containing `default.xex`). The builder remembers it for next time.
+4. **Choose your game files.** The builder has a section for each version:
+   * **Xbox 360 version:** click **Choose…** and select the XBLA package file (or a folder containing `default.xex`).
+   * **Nintendo 64 version:** click **Choose…** and select your ROM. A ROM already in the project's `assets/n64` folder is used automatically.
 
-5. **Click Build GoldenEye.** The progress bar shows each step. The first build takes a while (often 30–60 minutes), most of it building the recompiler once; later builds take a few minutes. When it's done, click **Open GoldenEye**.
+   The builder remembers each choice for next time.
 
-**Updates.** Each time it opens, the builder checks GitHub for a newer version of this project. When there is one, click **Update**, then **Build GoldenEye** again to rebuild the game with the changes.
+5. **Click Build** in that version's section (**Build GoldenEye** or **Build GoldenEye 64**). The progress bar shows each step. The first Xbox build takes a while (often 30–60 minutes), most of it building the recompiler once; later builds take a few minutes. When it's done, click **Play** in the same section.
 
-If a build fails, the builder shows what went wrong. The full log is in your user folder under **Library/Logs/GoldenEye/builder.log**.
+**Updates.** Each time it opens, the app checks GitHub for a newer version of this project. When there is one, click **Update**, then build again to get the changes.
 
-## Install & play
+If a build fails, the app shows what went wrong. The full log is in your user folder under **Library/Logs/GoldenEye** (`builder.log` for the Xbox version, `builder-n64.log` for the N64 version).
 
-1. Drag the finished **`GoldenEye.app`** from the project folder into **Applications**. It's self-contained, so the project folder isn't needed to play.
-2. Open it. Because it was built on your own Mac, macOS opens it without the security warning.
+## Play
+
+The same app is where you play. Click **Play GoldenEye** or **Play GoldenEye 64**: its window steps aside while the game runs and comes back when you quit it, so you can switch versions or rebuild.
+
+The built games are kept inside the GoldenEye app, so keep it in the project folder (that's where updates and rebuilds happen). To start it from the Dock, open it, then right-click its Dock icon and choose **Options → Keep in Dock**.
+
+### N64 version controls
+
+| N64 | Controller | Keyboard |
+| --- | --- | --- |
+| Stick (move, turn) | Left stick | W / S, Left / Right arrows |
+| C buttons (look, strafe) | Right stick | Up / Down arrows, A / D |
+| Z (fire) | Right trigger | Space |
+| R (aim) | Left trigger or right bumper | Left Shift |
+| A (next weapon) | Cross / A or Triangle / Y | Q |
+| B (use, reload) | Circle / B or Square / X | E |
+| L | Left bumper | |
+| Start | Start / Options | Return |
+| Full screen | | F11 or Cmd+F |
 
 ### Building from Terminal (optional)
 
-The builder runs `macos/build-macos.sh`, which you can also run yourself:
+The builder runs `macos/build-macos.sh` (Xbox) or `macos/build-n64.sh` (N64), which you can also run yourself:
 ```sh
 cd path/to/GoldenEye-Recomp-Mac
 bash macos/build-macos.sh /path/to/your/game/package   # or with the game files already in assets/
+bash macos/build-n64.sh "/path/to/GoldenEye 007 (USA).z64"   # or with the ROM in assets/n64/
 ```
 
-Once the app is built you can delete the project folder (or just `out/` and `macos/.deps/`) to free up space. Keep the folder if you want to rebuild later; it's faster.
+Run from Terminal, the scripts put the games in the same place, inside the GoldenEye app (set `GE_APP_DIR` to put them elsewhere).
+
+To free up space after building, you can delete `out/` and `macos/.deps/`; the next build just takes longer.
 
 ### Controls
 
@@ -226,7 +250,7 @@ Options (PowerShell): `-Config RelWithDebInfo`, `-SdkDir <path>`, `-Clean`, for 
 
 ## Legal
 
-This repository does not contain any game assets, game code, ROMs, XEX files, textures, audio, or other copyrighted material. You must supply the game files yourself; none are included or linked here. Don't share built copies of `GoldenEye.app` or the `GoldenEye-Windows` folder, because the game files are inside them.
+This repository does not contain any game assets, game code, ROMs, XEX files, textures, audio, or other copyrighted material. You must supply the game files yourself; none are included or linked here. Don't share the GoldenEye app after building with it, built copies of `GoldenEye.app`, or the `GoldenEye-Windows` folder, because the game files are inside them.
 
 ## License
 

@@ -25,6 +25,7 @@ set(GE_SOURCES
     src/ge_postfx.cpp
     src/ge_username.cpp
     src/ge_ce_patches.cpp
+    src/ge_textures.cpp
 )
 
 if(WIN32)

@@ -3,9 +3,9 @@
 <plist version="1.0">
 <dict>
   <key>CFBundleName</key>
-  <string>GoldenEye Builder</string>
+  <string>GoldenEye</string>
   <key>CFBundleDisplayName</key>
-  <string>GoldenEye Builder</string>
+  <string>GoldenEye</string>
   <key>CFBundleIdentifier</key>
   <string>com.alextownleymakes.goldeneye-builder</string>
   <key>CFBundleExecutable</key>

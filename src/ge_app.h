@@ -14,15 +14,23 @@
 #include <rex/ui/window.h>
 #include <rex/ui/windowed_app_context.h>
 
+#include <cstdio>
 #include <cstdlib>
+#include <ctime>
 #include <filesystem>
 #include <string>
+
+#if defined(__APPLE__)
+#include <fcntl.h>
+#include <unistd.h>
+#endif
 
 #if defined(__APPLE__)
 #include <rex/filesystem.h>
 #endif
 
 #include "ge_menu.h"
+#include "ge_textures.h"
 #include "ge_postfx.h"
 
 // Relaunch the current executable as a fresh process (implemented in
@@ -86,6 +94,16 @@ class GeApp : public rex::ReXApp {
       } else {
         paths.config_path = beside_app / "ge.toml";
       }
+      // Custom textures (ge_textures.h) live next to the settings. When turned
+      // on, the game reads its files through a patched copy that swaps in the
+      // edited textures.
+      ge::textures::SetFolder((support.empty() ? beside_app : support) / "Textures");
+      ge::textures::SetGameRoot(paths.game_data_root);
+      if (!paths.game_data_root.empty() && ge::textures::ConfigSaysOn(paths.config_path)) {
+        const std::filesystem::path patched =
+            ge::textures::BuildPatchedGameFolder(paths.game_data_root, ge::textures::Folder());
+        if (!patched.empty()) paths.game_data_root = patched;
+      }
     }
 #else
     (void)paths;
@@ -114,10 +132,37 @@ class GeApp : public rex::ReXApp {
   void OnConfigureLogging(rex::LogConfig& config) override {
     if (InAppBundle()) {
       const std::filesystem::path logs = MacLibraryDir("Logs");
-      if (!logs.empty()) config.log_dir = logs;
+      if (!logs.empty()) {
+        config.log_dir = logs;
+        CaptureErrorOutput(logs / "stderr.log");
+      }
     }
   }
+
+  // Anything written straight to the error output (including Rosetta's own
+  // message when it stops the game) otherwise goes nowhere when the game is
+  // opened from Finder, so keep it in the logs folder. One file, restarted
+  // when it gets large, with a line marking each launch.
+  static void CaptureErrorOutput(const std::filesystem::path& file) {
+    // MoltenVK prints a warning on most draws; writing those to a file from
+    // the GPU thread slows it enough to stall the game. Keep only its errors.
+    setenv("MVK_CONFIG_LOG_LEVEL", "1", 0);
+    std::error_code ec;
+    std::filesystem::create_directories(file.parent_path(), ec);
+    const bool large = std::filesystem::file_size(file, ec) > (1u << 20);
+    const int fd = ::open(file.c_str(), O_WRONLY | O_CREAT | (large ? O_TRUNC : O_APPEND), 0644);
+    if (fd < 0) return;
+    ::dup2(fd, STDERR_FILENO);
+    ::close(fd);
+    const std::time_t now = std::time(nullptr);
+    char stamp[64];
+    std::strftime(stamp, sizeof(stamp), "%Y-%m-%d %H:%M:%S", std::localtime(&now));
+    std::fprintf(stderr, "=== GoldenEye started %s ===\n", stamp);
+  }
 #endif
+
+  // Lines from building the patched texture folder (before logging started).
+  void OnPostInitLogging() override { ge::textures::SetLoggingReady(); }
 
   // ReXGlue 0.10+ loads the Xenos GPU as a plugin and leaves graphics off
   // unless one is named. Default to it (a gpu_plugin set in ge.toml or on the

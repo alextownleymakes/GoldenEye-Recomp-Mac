@@ -1,0 +1,569 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index fc06930..1b86229 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -136,15 +136,12 @@ function(build_shader_msl_impl TARGETOBJ FILENAME TARGET_NAME OUTNAME)
+     add_custom_command(OUTPUT ${OUTNAME}.metal
+             COMMAND spirv_cross_msl ${OUTNAME}.spv ${OUTNAME}.metal
+             DEPENDS ${OUTNAME}.spv spirv_cross_msl)
+-    add_custom_command(OUTPUT ${OUTNAME}.ir
+-            COMMAND xcrun -sdk macosx metal -o ${OUTNAME}.ir -c ${OUTNAME}.metal $<$<CONFIG:Debug>:-frecord-sources>
+-            DEPENDS ${OUTNAME}.metal)
+-    add_custom_command(OUTPUT ${OUTNAME}.metallib
+-            COMMAND xcrun -sdk macosx metallib ${OUTNAME}.ir -o ${OUTNAME}.metallib
+-            DEPENDS ${OUTNAME}.ir)
++    # Embed the Metal source; MetalShader compiles it when it's created. This
++    # avoids needing Xcode's offline Metal compiler (not part of the Command
++    # Line Tools) to build.
+     add_custom_command(OUTPUT ${OUTNAME}.metal.c
+-            COMMAND file_to_c ${OUTNAME}.metallib ${TARGET_NAME}BlobMSL ${OUTNAME}.metal.c ${OUTNAME}.metal.h
+-            DEPENDS ${OUTNAME}.metallib file_to_c
++            COMMAND file_to_c ${OUTNAME}.metal ${TARGET_NAME}BlobMSL ${OUTNAME}.metal.c ${OUTNAME}.metal.h
++            DEPENDS ${OUTNAME}.metal file_to_c
+             BYPRODUCTS ${OUTNAME}.metal.h)
+     target_sources(${TARGETOBJ} PRIVATE ${OUTNAME}.metal.c)
+ endfunction()
+diff --git a/src/gbi/rt64_gbi_f3dgolden.cpp b/src/gbi/rt64_gbi_f3dgolden.cpp
+index 2b02d47..d234904 100644
+--- a/src/gbi/rt64_gbi_f3dgolden.cpp
++++ b/src/gbi/rt64_gbi_f3dgolden.cpp
+@@ -7,6 +7,9 @@
+ #include "hle/rt64_interpreter.h"
+ 
+ #include "rt64_gbi_f3d.h"
++#include "rt64_gbi_rdp.h"
++
++#include <vector>
+ 
+ namespace RT64 {
+     namespace GBI_F3DGOLDEN {
+@@ -27,11 +30,78 @@ namespace RT64 {
+             }
+         }
+         
++        // GoldenEye's sky streams raw RDP triangles through the microcode 32
++        // bits at a time: G_RDPHALF_1 / G_RDPHALF_CONT pairs carry each 64-bit
++        // RDP word, starting with a triangle command, and G_RDPHALF_2 carries
++        // the last half. Gather them and draw the triangles.
++        static std::vector<uint32_t> rdpWords;
++        static bool rdpCollecting = false;
++
++        static bool isRdpTriangle(uint32_t word) {
++            const uint32_t command = (word >> 24) & 0x3F;
++            return (command >= 0x08) && (command <= 0x0F);
++        }
++
++        static void flushRdpWords(State *state) {
++            if (rdpWords.size() % 2) {
++                rdpWords.push_back(0);
++            }
++            std::vector<DisplayList> commands(rdpWords.size() / 2);
++            for (size_t i = 0; i < commands.size(); i++) {
++                commands[i].w0 = rdpWords[i * 2];
++                commands[i].w1 = rdpWords[i * 2 + 1];
++            }
++            DisplayList *cursor = commands.data();
++            DisplayList *end = commands.data() + commands.size();
++            while ((cursor < end) && isRdpTriangle(cursor->w0)) {
++                DisplayList *next = GBI_RDP::decodeTriangles(state, cursor, size_t(end - cursor));
++                if (next <= cursor) {
++                    break;
++                }
++                cursor = next;
++            }
++            rdpWords.clear();
++            rdpCollecting = false;
++        }
++
++        void rdpHalf1(State *state, DisplayList **dl) {
++            const uint32_t word = (*dl)->w1;
++            if (!rdpCollecting && isRdpTriangle(word)) {
++                rdpWords.clear();
++                rdpCollecting = true;
++            }
++            if (rdpCollecting) {
++                rdpWords.push_back(word);
++            }
++            else {
++                GBI_F3D::rdpHalf1(state, dl);
++            }
++        }
++
++        void rdpHalfCont(State *state, DisplayList **dl) {
++            if (rdpCollecting) {
++                rdpWords.push_back((*dl)->w1);
++            }
++        }
++
++        void rdpHalf2(State *state, DisplayList **dl) {
++            if (rdpCollecting) {
++                rdpWords.push_back((*dl)->w1);
++                flushRdpWords(state);
++            }
++            else {
++                GBI_F3D::rdpHalf2(state, dl);
++            }
++        }
++
+         void setup(GBI *gbi) {
+             GBI_F3D::setup(gbi);
+ 
+             gbi->map[F3DGOLDEN_G_TRIX] = &triX;
+             gbi->map[F3DGOLDEN_G_MOVEWORD] = GBI_F3D::moveWord;
++            gbi->map[F3D_G_RDPHALF_1] = &rdpHalf1;
++            gbi->map[F3D_G_RDPHALF_2] = &rdpHalf2;
++            gbi->map[0xB2] = &rdpHalfCont;  // G_RDPHALF_CONT
+         }
+     }
+ };
+\ No newline at end of file
+diff --git a/src/gbi/rt64_gbi_rdp.cpp b/src/gbi/rt64_gbi_rdp.cpp
+index 6255872..0d36b57 100644
+--- a/src/gbi/rt64_gbi_rdp.cpp
++++ b/src/gbi/rt64_gbi_rdp.cpp
+@@ -337,6 +337,7 @@ namespace RT64 {
+             uint32_t tile = -1;
+             uint32_t level = -1;
+ 
++            uint32_t triCount = 0;
+             for (const DisplayList* curData : triangles) {
+                 uint32_t commandId = (curData[0].w0 >> 24) & 0x3F;
+                 // TODO flush when tile and level change
+@@ -351,75 +352,61 @@ namespace RT64 {
+                 bool textured = (commandId & (uint32_t)RDPTriangle::Textured) != 0;
+                 bool shaded = (commandId & (uint32_t)RDPTriangle::Shaded) != 0;
+ 
+-                // int flip = (curData[0].w0 >> 23) & 1;
+-                // Extract the coords and slopes
++                // Extract the coords and slopes.
+                 int16_t ylFixed = (curData[0].w0 & 0x0000FFFF) << 2 >> 2;
+                 int16_t ymFixed = (curData[0].w1 >> 16) << 2 >> 2;
+                 int16_t yhFixed = (curData[0].w1 & 0x0000FFFF) << 2 >> 2;
+-
+-                int32_t xlFixed = curData[1].w0;
+-                int32_t dxldyFixed = curData[1].w1;
+-                int32_t xhFixed = curData[2].w0;
+-                int32_t dxhdyFixed = curData[2].w1;
+-                int32_t xmFixed = curData[3].w0;
+-                int32_t dxmdyFixed = curData[3].w1;
+-
+-                // Convert from fixed to floating point
+                 float yl = ylFixed / 4.0f;
+                 float ym = ymFixed / 4.0f;
+                 float yh = yhFixed / 4.0f;
++                ym = std::min(std::max(ym, yh), yl);
+ 
+-                float y1 = yh;
+-                float y2 = yl;
+-
+-                float xl = xlFixed / 65536.0f;
+-                float xm = xmFixed / 65536.0f;
+-                float xh = xhFixed / 65536.0f;
++                float xl = int32_t(curData[1].w0) / 65536.0f;
++                float dxldy = int32_t(curData[1].w1) / 65536.0f;
++                float xh = int32_t(curData[2].w0) / 65536.0f;
++                float dxhdy = int32_t(curData[2].w1) / 65536.0f;
++                float xm = int32_t(curData[3].w0) / 65536.0f;
++                float dxmdy = int32_t(curData[3].w1) / 65536.0f;
+ 
+-                float dxldy = dxldyFixed / 65536.0f;
+-                float dxmdy = dxmdyFixed / 65536.0f;
+-                float dxhdy = dxhdyFixed / 65536.0f;
+-
+-                // Round yh down (which translates to up on the screen) to the nearest scanline to get the y-coordinate of XM and XH
++                // XH and XM are given at the scanline containing YH; XL at YM.
+                 float yFloor = floorf(yh);
+-
+-                // Calculate the x intercepts of the H and M line
+-                float hIntercept = xh - dxhdy * yFloor;
+-                float mIntercept = xm - dxmdy * yFloor;
+-
+-                // Using the equation of the H line, calculate the x coordinate on H at y=yh
+-                float x1 = dxhdy * y1 + hIntercept;
+-
+-                // Using the equation of the H line, calculate the x coordinate on H at y=yl
+-                float x2 = dxhdy * y2 + hIntercept;
+-
+-                // Calculate the x intercept of the L line
+-                float l_intercept = x2 - dxldy * y2;
+-
+-                // Get the third vertex from the inputs
+-                float x3 = xl;
+-                float y3 = ym;
+-
+-                posWorkBuffer[workBufferIndex + 0].x = x1;
+-                posWorkBuffer[workBufferIndex + 0].y = y1;
+-                posWorkBuffer[workBufferIndex + 1].x = x2;
+-                posWorkBuffer[workBufferIndex + 1].y = y2;
+-                posWorkBuffer[workBufferIndex + 2].x = x3;
+-                posWorkBuffer[workBufferIndex + 2].y = y3;
++                auto xOnH = [&](float y) { return xh + dxhdy * (y - yFloor); };
++                auto xOnM = [&](float y) { return xm + dxmdy * (y - yFloor); };
++                auto xOnL = [&](float y) { return xl + dxldy * (y - ym); };
++
++                // The RDP draws a trapezoid, not just a triangle: the major (H) edge
++                // on one side and the M then L edges on the other. The top and the
++                // bottom spans can both have width (GoldenEye's sky relies on this),
++                // so build the whole outline and split it into triangles.
++                float px[6], py[6];
++                int n = 0;
++                auto addPoint = [&](float x, float y) {
++                    if ((n > 0) && (fabsf(px[n - 1] - x) < 1e-3f) && (fabsf(py[n - 1] - y) < 1e-3f)) {
++                        return;
++                    }
++                    px[n] = x; py[n] = y; n++;
++                };
++
++                addPoint(xOnH(yh), yh);
++                addPoint(xOnH(yl), yl);
++                addPoint(xOnL(yl), yl);
++                addPoint(xOnL(ym), ym);
++                addPoint(xOnM(ym), ym);
++                addPoint(xOnM(yh), yh);
++                if ((n > 1) && (fabsf(px[n - 1] - px[0]) < 1e-3f) && (fabsf(py[n - 1] - py[0]) < 1e-3f)) {
++                    n--;
++                }
+ 
+                 curData += triangleBaseWords;
+ 
+-                // Calculate y distance from each vertex to the start of the major edge which is used for other coefficients.
+-                float dy_1 = y1 - yFloor;
+-                float dy_2 = y2 - yFloor;
+-                float dy_3 = y3 - yFloor;
+-
+-                // Get the x coordinate of the point at y=y3 on the opposite edge of the third vertex.
+-                float x3_opposite = dxhdy * y3 + hIntercept;
+-
+-                // Calculate x distance from the point opposite vertex 3 to vertex 3 itself.
+-                float dx_3 = x3 - x3_opposite;
++                // Every attribute is given at XH on the YH scanline, with a step per
++                // scanline along the H edge (De) and per pixel across (Dx).
++                auto stepsOf = [&](float x, float y, float &dy, float &dx) {
++                    dy = y - yFloor;
++                    dx = x - xOnH(y);
++                };
+ 
++                hlslpp::float4 colorBase(0.0f), colorDx(0.0f), colorDe(0.0f);
+                 if (shaded) {
+                     hlslpp::int4 baseColorFixed{
+                         ((curData[0].w0 >> 16) << 16) | (curData[2].w0 >> 16),
+@@ -442,41 +429,13 @@ namespace RT64 {
+                         ((curData[4].w1 & 0xFFFF) << 16) | (curData[6].w1 & 0xFFFF),
+                     };
+ 
+-                    // dy seems to only be used on edge pixels for anti aliasing purposes
+-                    // hlslpp::int4 colorDyFixed {
+-                    //     ((curData[5].w0 >> 16)    << 16) | (curData[7].w0 >> 16),
+-                    //     ((curData[5].w0 & 0xFFFF) << 16) | (curData[7].w0 & 0xFFFF),
+-                    //     ((curData[5].w1 >> 16)    << 16) | (curData[7].w1 >> 16),
+-                    //     ((curData[5].w1 & 0xFFFF) << 16) | (curData[7].w1 & 0xFFFF),
+-                    // };
+-
+-                    hlslpp::float4 baseColor = hlslpp::float4(baseColorFixed) * (1.0f / 65536.0f);
+-                    hlslpp::float4 colorDx = hlslpp::float4(colorDxFixed) * (1.0f / 65536.0f);
+-                    hlslpp::float4 colorDe = hlslpp::float4(colorDeFixed) * (1.0f / 65536.0f);
+-                    // hlslpp::float4 colorDy   = hlslpp::float4(colorDyFixed)   * (1.0f / 65536.0f);
+-
+-                    // Offset the base color (which seems to start at XH) by the distance between YH and the y-coord of XH.
+-                    hlslpp::float4 v1Color = baseColor + colorDe * dy_1;
+-                    // Use the edge derivative to calculate the color at the middle vertex from the color at the major vertex
+-                    hlslpp::float4 v2Color = baseColor + colorDe * dy_2;
+-                    // Use the edge derivative to calculate the color at the opposite side of the last vertex from the color at the second vertex
+-                    hlslpp::float4 v3OppositeColor = baseColor + colorDe * dy_3;
+-                    // Use the x derivative to calculate the color at the last vertex, starting from its opposite point
+-                    hlslpp::float4 v3Color = v3OppositeColor + colorDx * dx_3;
+-
+-                    colorWorkBuffer[workBufferIndex + 0] = v1Color * (1/255.0f);
+-                    colorWorkBuffer[workBufferIndex + 1] = v2Color * (1/255.0f);
+-                    colorWorkBuffer[workBufferIndex + 2] = v3Color * (1/255.0f);
+-
++                    colorBase = hlslpp::float4(baseColorFixed) * (1.0f / 65536.0f);
++                    colorDx = hlslpp::float4(colorDxFixed) * (1.0f / 65536.0f);
++                    colorDe = hlslpp::float4(colorDeFixed) * (1.0f / 65536.0f);
+                     curData += triangleShadeWords;
+                 }
+-                // No shade coefficients
+-                else {
+-                    colorWorkBuffer[workBufferIndex + 0] = interop::float4(0.0f, 0.0f, 0.0f, 0.0f);
+-                    colorWorkBuffer[workBufferIndex + 1] = interop::float4(0.0f, 0.0f, 0.0f, 0.0f);
+-                    colorWorkBuffer[workBufferIndex + 2] = interop::float4(0.0f, 0.0f, 0.0f, 0.0f);
+-                }
+ 
++                hlslpp::float3 tcBase(0.0f), tcDx(0.0f), tcDe(0.0f);
+                 if (textured) {
+                     hlslpp::int3 baseTexcoordFixed{
+                         ((curData[0].w0 >> 16) << 16) | (curData[2].w0 >> 16),
+@@ -496,95 +455,71 @@ namespace RT64 {
+                         ((curData[4].w1 >> 16) << 16) | (curData[6].w1 >> 16)
+                     };
+ 
+-                    // dy seems to only be used on edge pixels for anti aliasing purposes
+-                    hlslpp::int3 texcoordDyFixed{
+-                        ((curData[5].w0 >> 16) << 16) | (curData[7].w0 >> 16),
+-                        ((curData[5].w0 & 0xFFFF) << 16) | (curData[7].w0 & 0xFFFF),
+-                        ((curData[5].w1 >> 16) << 16) | (curData[7].w1 >> 16)
+-                    };
+-
+-                    hlslpp::float3 baseTexcoord = hlslpp::float3(baseTexcoordFixed) * (1.0f / 65536.0f);
+-                    hlslpp::float3 texcoordDx = hlslpp::float3(texcoordDxFixed) * (1.0f / 65536.0f);
+-                    hlslpp::float3 texcoordDe = hlslpp::float3(texcoordDeFixed) * (1.0f / 65536.0f);
+-                    hlslpp::float3 texcoordDy = hlslpp::float3(texcoordDyFixed) * (1.0f / 65536.0f);
+-
+-                    // Same calculations as shade color
+-                    float w_base = baseTexcoord[2];
+-                    float w1 = w_base + texcoordDe[2] * dy_1;
+-                    float w2 = w_base + texcoordDe[2] * dy_2;
+-                    float w3_opposite = w_base + texcoordDe[2] * dy_3;
+-                    float w3 = w3_opposite + texcoordDx[2] * dx_3;
+-
+-                    // Repeat the calculations but with perspective correction
+-                    hlslpp::float2 v1_texcoord = baseTexcoord.xy + texcoordDe.xy * dy_1;
+-                    hlslpp::float2 v2_texcoord = baseTexcoord.xy + texcoordDe.xy * dy_2;
+-                    hlslpp::float2 v3_opposite_texcoord = baseTexcoord.xy + texcoordDe.xy * dy_3;
+-                    hlslpp::float2 v3_texcoord = v3_opposite_texcoord + texcoordDx.xy * dx_3;
+-                    if (texturePerspective) {
+-                        posWorkBuffer[workBufferIndex + 0].w = 65536000.0f / w1;
+-                        posWorkBuffer[workBufferIndex + 1].w = 65536000.0f / w2;
+-                        posWorkBuffer[workBufferIndex + 2].w = 65536000.0f / w3;
+-                        texcoordWorkBuffer[workBufferIndex + 0] = (v1_texcoord / w1) * 1024.0f;
+-                        texcoordWorkBuffer[workBufferIndex + 1] = (v2_texcoord / w2) * 1024.0f;
+-                        texcoordWorkBuffer[workBufferIndex + 2] = (v3_texcoord / w3) * 1024.0f;
+-                    }
+-                    else {
+-                        posWorkBuffer[workBufferIndex + 0].w = 1.0f;
+-                        posWorkBuffer[workBufferIndex + 1].w = 1.0f;
+-                        posWorkBuffer[workBufferIndex + 2].w = 1.0f;
+-                        texcoordWorkBuffer[workBufferIndex + 0] = (v1_texcoord * 1024.0f) / 16384.0f;
+-                        texcoordWorkBuffer[workBufferIndex + 1] = (v2_texcoord * 1024.0f) / 16384.0f;
+-                        texcoordWorkBuffer[workBufferIndex + 2] = (v3_texcoord * 1024.0f) / 16384.0f;
+-                    }
+-
++                    tcBase = hlslpp::float3(baseTexcoordFixed) * (1.0f / 65536.0f);
++                    tcDx = hlslpp::float3(texcoordDxFixed) * (1.0f / 65536.0f);
++                    tcDe = hlslpp::float3(texcoordDeFixed) * (1.0f / 65536.0f);
+                     curData += triangleTexWords;
+                 }
+-                // No texture coefficients
+-                else {
+-                    posWorkBuffer[workBufferIndex + 0].w = 1.0f;
+-                    posWorkBuffer[workBufferIndex + 1].w = 1.0f;
+-                    posWorkBuffer[workBufferIndex + 2].w = 1.0f;
+-                    texcoordWorkBuffer[workBufferIndex + 0] = interop::float2(0.0f, 0.0f);
+-                    texcoordWorkBuffer[workBufferIndex + 1] = interop::float2(0.0f, 0.0f);
+-                    texcoordWorkBuffer[workBufferIndex + 2] = interop::float2(0.0f, 0.0f);
+-                }
+ 
++                float depthBase = 0.0f, depthDx = 0.0f, depthDe = 0.0f;
+                 if (hasDepth) {
+-                    int baseDepthFixed = curData[0].w0;
+-                    int depthDxFixed = curData[0].w1;
+-                    int depthDeFixed = curData[1].w0;
+-                    // dy seems to only be used on edge pixels for anti aliasing purposes
+-                    int depthDyFixed = curData[1].w1;
+-
+-                    float baseDepth = baseDepthFixed * (1.0f / 65536.0f / 32768.0f);
+-                    float depthDx = depthDxFixed * (1.0f / 65536.0f / 32768.0f);
+-                    float depthDe = depthDeFixed * (1.0f / 65536.0f / 32768.0f);
+-                    float depthDy = depthDyFixed * (1.0f / 65536.0f / 32768.0f);
+-
+-                    // Same calculations as shade color and texcoords
+-                    float v1Depth = baseDepth + depthDe * dy_1;
+-                    float v2Depth = baseDepth + depthDe * dy_2;
+-                    float v3_opposite_depth = baseDepth + depthDe * dy_3;
+-                    float v3Depth = v3_opposite_depth + depthDx * dx_3;
+-
+-                    posWorkBuffer[workBufferIndex + 0].z = v1Depth;
+-                    posWorkBuffer[workBufferIndex + 1].z = v2Depth;
+-                    posWorkBuffer[workBufferIndex + 2].z = v3Depth;
+-
++                    depthBase = int32_t(curData[0].w0) * (1.0f / 65536.0f / 32768.0f);
++                    depthDx = int32_t(curData[0].w1) * (1.0f / 65536.0f / 32768.0f);
++                    depthDe = int32_t(curData[1].w0) * (1.0f / 65536.0f / 32768.0f);
+                     curData += triangleDepthWords;
+                 }
+-                // No depth coefficients
+-                else {
+-                    posWorkBuffer[workBufferIndex + 0].z = 0.0f;
+-                    posWorkBuffer[workBufferIndex + 1].z = 0.0f;
+-                    posWorkBuffer[workBufferIndex + 2].z = 0.0f;
++
++                if (n < 3) {
++                    continue;
+                 }
+ 
+-                // TODO do more than 1 tri at a time
+-                break;
++                const size_t needed = (triCount + (n - 2)) * 3;
++                setMinSize(posWorkBuffer, needed);
++                setMinSize(colorWorkBuffer, needed);
++                setMinSize(texcoordWorkBuffer, needed);
++
++                auto writeVertex = [&](size_t index, int p) {
++                    float dy, dx;
++                    stepsOf(px[p], py[p], dy, dx);
++                    interop::float4 &pos = posWorkBuffer[index];
++                    pos.x = px[p];
++                    pos.y = py[p];
++                    pos.z = hasDepth ? (depthBase + depthDe * dy + depthDx * dx) : 0.0f;
++                    if (shaded) {
++                        colorWorkBuffer[index] = (colorBase + colorDe * dy + colorDx * dx) * (1 / 255.0f);
++                    }
++                    else {
++                        colorWorkBuffer[index] = interop::float4(0.0f, 0.0f, 0.0f, 0.0f);
++                    }
++
++                    if (textured) {
++                        hlslpp::float3 tc = tcBase + tcDe * dy + tcDx * dx;
++                        if (texturePerspective) {
++                            pos.w = 65536000.0f / tc.z;
++                            texcoordWorkBuffer[index] = (tc.xy / tc.z) * 1024.0f;
++                        }
++                        else {
++                            pos.w = 1.0f;
++                            texcoordWorkBuffer[index] = (tc.xy * 1024.0f) / 16384.0f;
++                        }
++                    }
++                    else {
++                        pos.w = 1.0f;
++                        texcoordWorkBuffer[index] = interop::float2(0.0f, 0.0f);
++                    }
++                };
++
++                for (int i = 1; i + 1 < n; i++) {
++                    writeVertex(triCount * 3 + 0, 0);
++                    writeVertex(triCount * 3 + 1, i);
++                    writeVertex(triCount * 3 + 2, i + 1);
++                    triCount++;
++                }
+             }
+ 
+-            state->rdp->drawTris(1, &posWorkBuffer.data()[0][0], &texcoordWorkBuffer.data()[0][0], &colorWorkBuffer[0][0], tile, level);
++            if (triCount > 0) {
++                state->rdp->drawTris(triCount, &posWorkBuffer.data()[0][0], &texcoordWorkBuffer.data()[0][0], &colorWorkBuffer[0][0], tile, level);
++            }
+ 
+             return trianglesEnd;
+         }
+diff --git a/src/gbi/rt64_gbi_rdp.h b/src/gbi/rt64_gbi_rdp.h
+index f364e5d..09354e7 100644
+--- a/src/gbi/rt64_gbi_rdp.h
++++ b/src/gbi/rt64_gbi_rdp.h
+@@ -36,6 +36,7 @@ namespace RT64 {
+         void pipeSync(State *state, DisplayList **dl);
+         void tileSync(State *state, DisplayList **dl);
+         void fullSync(State *state, DisplayList **dl);
++        DisplayList *decodeTriangles(State *state, DisplayList *triangleData, size_t arrayLength);
+         void setup(GBI *gbi, bool isHLE);
+     };
+ };
+\ No newline at end of file
+diff --git a/src/hle/rt64_vi.cpp b/src/hle/rt64_vi.cpp
+index 8d66101..8d81eeb 100644
+--- a/src/hle/rt64_vi.cpp
++++ b/src/hle/rt64_vi.cpp
+@@ -19,21 +19,23 @@ namespace RT64 {
+     const uint32_t VI::Height = 480;
+ 
+     RectI VI::viewRectangle() const {
+-        // TODO
++        // Hide the outermost column on each side, as a TV's overscan does:
++        // GoldenEye leaves them in its clear color (a blue strip on the edges).
+         RectI rect;
+-        rect.x = 0;
++        rect.x = 2;
+         rect.y = 0;
+-        rect.w = Width;
++        rect.w = Width - 4;
+         rect.h = Height;
+         return rect;
+     }
+ 
+     RectI VI::cropRectangle() const {
+-        // TODO
++        // Hide the outermost column on each side, as a TV's overscan does:
++        // GoldenEye leaves them in its clear color (a blue strip on the edges).
+         RectI rect;
+-        rect.x = 0;
++        rect.x = 2;
+         rect.y = 0;
+-        rect.w = Width;
++        rect.w = Width - 4;
+         rect.h = Height;
+         return rect;
+     }
+diff --git a/src/metal/rt64_metal.cpp b/src/metal/rt64_metal.cpp
+index 0d88e46..015ba92 100644
+--- a/src/metal/rt64_metal.cpp
++++ b/src/metal/rt64_metal.cpp
+@@ -8,6 +8,8 @@
+ #include <CoreFoundation/CoreFoundation.h>
+ 
+ #include <algorithm>
++#include <cstring>
++#include <string>
+ #include <xxHash/xxh3.h>
+ #include <mutex>
+ 
+@@ -1176,8 +1178,16 @@ namespace RT64 {
+         this->functionName = (entryPointName != nullptr) ? NS::String::string(entryPointName, NS::UTF8StringEncoding) : MTLSTR("");
+ 
+         NS::Error *error = nullptr;
+-        const dispatch_data_t dispatchData = dispatch_data_create(data, size, dispatch_get_main_queue(), ^{});
+-        library = device->mtl->newLibrary(dispatchData, &error);
++        if ((size >= 4) && (memcmp(data, "MTLB", 4) == 0)) {
++            // Precompiled metallib.
++            const dispatch_data_t dispatchData = dispatch_data_create(data, size, dispatch_get_main_queue(), ^{});
++            library = device->mtl->newLibrary(dispatchData, &error);
++        }
++        else {
++            // Metal source text, compiled now.
++            const std::string source(static_cast<const char *>(data), size);
++            library = device->mtl->newLibrary(NS::String::string(source.c_str(), NS::UTF8StringEncoding), nullptr, &error);
++        }
+ 
+         if (error != nullptr) {
+             fprintf(stderr, "MTLDevice newLibraryWithSource: failed with error %s.\n", error->localizedDescription()->utf8String());
+diff --git a/src/render/rt64_raster_shader.cpp b/src/render/rt64_raster_shader.cpp
+index 721a01e..3c706cb 100644
+--- a/src/render/rt64_raster_shader.cpp
++++ b/src/render/rt64_raster_shader.cpp
+@@ -312,9 +312,11 @@ namespace RT64 {
+         pipelineDesc.renderTargetFormat[0] = RenderTarget::colorBufferFormat(c.usesHDR);
+         pipelineDesc.renderTargetCount = 1;
+         pipelineDesc.cullMode = c.culling ? RenderCullMode::FRONT : RenderCullMode::NONE;
+-        pipelineDesc.depthClipEnabled = !c.NoN;
++        // GoldenEye: depth past the far plane is clamped (as the RDP does), not clipped.
++        pipelineDesc.depthClipEnabled = false;
+         pipelineDesc.depthEnabled = c.zCmp || c.zUpd;
+-        pipelineDesc.depthFunction = c.zCmp ? RenderComparisonFunction::LESS : RenderComparisonFunction::ALWAYS;
++        // Clamped far depth equals the cleared depth, which the RDP still lets through.
++        pipelineDesc.depthFunction = c.zCmp ? RenderComparisonFunction::LESS_EQUAL : RenderComparisonFunction::ALWAYS;
+         pipelineDesc.depthWriteEnabled = c.zUpd;
+         pipelineDesc.depthTargetFormat = RenderFormat::D32_FLOAT;
+         pipelineDesc.multisampling = c.multisampling;
+diff --git a/src/shaders/RasterPS.hlsl b/src/shaders/RasterPS.hlsl
+index f5beee9..867d7a0 100644
+--- a/src/shaders/RasterPS.hlsl
++++ b/src/shaders/RasterPS.hlsl
+@@ -67,18 +67,14 @@ LIBRARY_EXPORT bool RasterPS(const RenderParams rp, float4 vertexPosition, float
+     // Handle no-nearclipping by clamping the minimum depth and manually clipping above the maximum.
+     if (depthClampNear) {
+         // Since depth clip is disabled on the PSO so near clip can be ignored, we manually clip any values above the allowed depth.
+-        if (vertexPosition.z > 1.0f) {
+-            return false;
+-        }
++        // GoldenEye: the RDP clamps depth past the far plane instead of clipping it.
+     }
+-#ifdef DYNAMIC_RENDER_PARAMS
+-    // We emulate depth clip on the dynamic version of the shader.
+     else {
+-        if ((vertexPosition.z < 0.0f) || (vertexPosition.z > 1.0f)) {
++        // Only the near plane clips; anything past the far plane is clamped to the far depth.
++        if (vertexPosition.z < 0.0f) {
+             return false;
+         }
+     }
+-#endif
+ 
+     if (depthDecal) {
+         // Sample the depth buffer for this pixel to compare for the decal check.

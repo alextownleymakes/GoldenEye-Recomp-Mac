@@ -8,7 +8,7 @@
 #   bash macos/build-macos.sh /path/to/game-folder # or: a folder with default.xex
 #
 # Most people don't need this script directly: double-click
-# "GoldenEye Builder.app" in the project folder instead. It runs this script
+# "GoldenEye" (GoldenEye.app) in the project folder instead. It runs this script
 # for you in a window (GE_NONINTERACTIVE=1: no questions asked here).
 #
 # The XBLA download is a single extensionless "LIVE" package. Pass its path,
@@ -22,7 +22,9 @@
 #      GoldenEye changes from macos/rexglue-sdk-goldeneye.patch.
 #   3. Builds and installs the SDK (once; later runs reuse it).
 #   4. Recompiles YOUR copy of the game (assets/default.xex) into C++.
-#   5. Builds GoldenEye.app and puts it next to the assets folder.
+#   5. Builds the game and puts it inside the GoldenEye app in the project
+#      folder (GoldenEye.app/Contents/Games), which plays it. GE_APP_DIR=dir
+#      puts it somewhere else instead.
 #
 # Options (environment variables):
 #   CONFIG=RelWithDebInfo bash macos/build-macos.sh   # Release (default) / RelWithDebInfo / Debug
@@ -291,7 +293,9 @@ APP_SRC="$GAME_BUILD/GoldenEye.app"
 # program + the game files inside it (Contents/Resources/assets). Settings go to
 # ~/Library/Application Support/GoldenEye, logs to ~/Library/Logs/GoldenEye.
 bold "Packaging GoldenEye.app (with game files inside)"
-APP="$ROOT/GoldenEye.app"
+APP_DIR="${GE_APP_DIR:-$ROOT/GoldenEye.app/Contents/Games}"
+mkdir -p "$APP_DIR"
+APP="$APP_DIR/GoldenEye.app"
 rm -rf "$APP"
 ditto "$APP_SRC" "$APP"
 
@@ -306,6 +310,7 @@ while IFS= read -r f; do
 done < <(find "$ROOT/assets" -type f -size +1M 2>/dev/null)
 find "$APP/Contents/Resources/assets" -name .DS_Store -delete
 rm -f "$APP/Contents/Resources/assets/.ge-source"
+rm -rf "$APP/Contents/Resources/assets/n64"  # the N64 ROM belongs to GoldenEye 64.app
 assets_mb="$(du -sm "$APP/Contents/Resources/assets" | awk '{print $1}')"
 note "Bundled ${assets_mb} MB of game files"
 

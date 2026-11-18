@@ -11,7 +11,7 @@ This folder turns the project into a native macOS app (`GoldenEye.app`) for Appl
 
 ## Build
 
-The easy way: double-click **GoldenEye Builder** in the project folder. It installs what's missing, asks for your game files (and remembers them), builds with a progress bar, and checks GitHub for updates. See the main README for the one-time macOS security step.
+The easy way: double-click the **GoldenEye** app in the project folder. It installs what's missing, asks for your game files (and remembers them), builds with a progress bar, and checks GitHub for updates. See the main README for the one-time macOS security step.
 
 From Terminal:
 
@@ -22,7 +22,7 @@ bash macos/build-macos.sh
 bash macos/build-macos.sh ~/Downloads/GoldenEye_007_XBLA_Retail/0000000000000000/584108A9/000D0000/30BA92710985645EF623D4A6BA9E8EFFAEC62617
 ```
 
-The first run takes a while. The SDK build alone is roughly 15–40 minutes on an M-series Mac, and later runs reuse it. When the script finishes, `GoldenEye.app` is in the project folder next to `assets/`.
+The first run takes a while. The SDK build alone is roughly 15–40 minutes on an M-series Mac, and later runs reuse it. When the script finishes, the game is inside the GoldenEye app in the project folder (`GoldenEye.app/Contents/Games/GoldenEye.app`); open the GoldenEye app and click **Play GoldenEye**. Set `GE_APP_DIR=/some/folder` to put the built game somewhere else.
 
 Options:
 
@@ -35,11 +35,11 @@ Options:
 
 ## Run
 
-The build produces a self-contained `GoldenEye.app` in the project folder. Your game files are copied inside it (`Contents/Resources/assets`), as APFS clones, so they take no extra disk space. Move it anywhere, such as `/Applications`, and double-click it or run `open GoldenEye.app`.
+The build produces a self-contained game app (inside the GoldenEye app, or in `GE_APP_DIR`). Your game files are copied inside it (`Contents/Resources/assets`), as APFS clones, so they take no extra disk space. Play it from the GoldenEye app, or open the game app directly.
 
 * Settings: `~/Library/Application Support/GoldenEye/ge.toml`
 * Logs: `~/Library/Logs/GoldenEye/`, also viewable in Console.app
-* The project's `assets/` folder is only needed for rebuilding. If no files are bundled in the app, it falls back to an `assets` folder next to `GoldenEye.app`.
+* The project's `assets/` folder is only needed for rebuilding. If no files are bundled in the app, it falls back to an `assets` folder next to the game app.
 
 If macOS says the app "can't be opened", right-click it, choose **Open**, then confirm. The app is signed ad hoc because it was built on your Mac.
 

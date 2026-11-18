@@ -1,0 +1,16 @@
+# RSPRecomp configuration for GoldenEye 007's audio microcode (aspMain).
+# The microcode is in the game's compressed data segment, so this reads the
+# prepared ROM (n64/tools/prepare_rom.py appends that segment, decompressed,
+# at 0xC00000): aspMainTextStart 0x80022280 - segment start 0x80020D90
+# = 0x14F0 into it.
+text_offset = 0xC014F0
+text_size = 0xDC0
+text_address = 0x04001080
+rom_file_path = "ge007.recomp.z64"
+output_file_path = "RecompiledFuncs/aspMain.cpp"
+output_function_name = "aspMain"
+# The audio command handlers, from the microcode's jump table in its data.
+extra_indirect_branch_targets = [
+    0x1118, 0x1470, 0x11DC, 0x1B38, 0x1214, 0x187C, 0x1254, 0x12D0,
+    0x12EC, 0x1328, 0x140C, 0x1294, 0x1DC8, 0x138C, 0x170C, 0x144C,
+]

@@ -9,6 +9,7 @@
 
 #include "ge_menu.h"
 #include "ge_postfx.h"
+#include "ge_textures.h"
 
 #include <rex/cvar.h>
 #include <rex/ui/keybinds.h>     // VirtualKeyToString (key rebinding)
@@ -19,7 +20,10 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
+#include <mutex>
 #include <string>
+#include <thread>
 
 // While the menu is waiting to capture a rebind key, ge_inject_keyboard swallows
 // all game input so the key being bound can't act. Implemented in ge_hooks.cpp.
@@ -34,6 +38,74 @@ float GetCvarF(const char* name) {
 void SetCvarF(const char* name, float v) { rex::cvar::SetFlagByName(name, std::to_string(v)); }
 bool GetCvarB(const char* name) { return rex::cvar::GetFlagByName(name) == "true"; }
 void SetCvarB(const char* name, bool v) { rex::cvar::SetFlagByName(name, v ? "true" : "false"); }
+
+// --- Custom textures: background export job (ge_textures.h) ---
+struct TextureExportJob {
+  ge::textures::ExportProgress progress;
+  std::atomic<bool> running{false};
+  std::mutex mutex;
+  std::string status;  // last result, shown under the buttons
+};
+TextureExportJob& ExportJob() {
+  static TextureExportJob job;
+  return job;
+}
+void SetExportStatus(const std::string& text) {
+  std::lock_guard<std::mutex> lock(ExportJob().mutex);
+  ExportJob().status = text;
+}
+void StartTextureExport(bool characters_only) {
+  TextureExportJob& job = ExportJob();
+  if (job.running.exchange(true)) return;
+  job.progress.files_done = 0;
+  job.progress.files_total = 0;
+  job.progress.textures_written = 0;
+  job.progress.cancel = false;
+  SetExportStatus("");
+  std::thread([characters_only] {
+    TextureExportJob& job = ExportJob();
+    const std::filesystem::path folder = ge::textures::Folder();
+    ge::textures::WriteReadme(folder);
+    // Everything comes to well over a gigabyte of PNGs; characters are small.
+    const std::uintmax_t need = characters_only ? (300ull << 20) : (3ull << 30);
+    std::error_code ec;
+    const std::filesystem::space_info space = std::filesystem::space(folder, ec);
+    if (!ec && space.available < need) {
+      SetExportStatus(characters_only ? "Not enough free disk space (needs about 300 MB)."
+                                      : "Not enough free disk space (needs about 3 GB).");
+      job.running = false;
+      return;
+    }
+    std::vector<std::string> only;
+    if (characters_only) {
+      only = {"files/new/char", "files/new/head", "files/original/char", "files/original/head",
+              "files/texture/characters"};
+    }
+    const ge::textures::ExportResult r =
+        ge::textures::ExportAll(ge::textures::GameRoot(), folder, job.progress, only);
+    char text[256];
+    if (r.error.empty()) {
+      std::snprintf(text, sizeof(text), "Exported %d textures to Textures/Export.", r.textures);
+    } else {
+      std::snprintf(text, sizeof(text), "Export stopped: %s (%d textures written).", r.error.c_str(),
+                    r.textures);
+    }
+    SetExportStatus(text);
+    job.running = false;
+  }).detach();
+}
+void OpenFolder(const std::filesystem::path& folder) {
+  std::error_code ec;
+  std::filesystem::create_directories(folder, ec);
+#if defined(__APPLE__)
+  const std::string cmd = "open \"" + folder.string() + "\"";
+#elif defined(_WIN32)
+  const std::string cmd = "explorer \"" + folder.string() + "\"";
+#else
+  const std::string cmd = "xdg-open \"" + folder.string() + "\" &";
+#endif
+  std::system(cmd.c_str());
+}
 
 // --- Briefing palette (sampled from the reference screenshot) ---
 constexpr ImU32 kFolder = IM_COL32(214, 201, 162, 255);     // manila paper
@@ -580,6 +652,49 @@ void GeMenuDialog::DrawContent(ImGuiIO& /*io*/) {
         ImGui::EndDisabled();
         ImGui::TextColored(ImColor(kInkDim),
                            "(red: guards, grey X: items, yellow: ammo, green: next objective)");
+      }
+
+      ImGui::Spacing();
+      ImGui::Separator();
+      ImGui::Spacing();
+
+      // --- Custom textures (ge_textures.h) ---
+      ImGui::TextColored(ImColor(kTitle), "CUSTOM TEXTURES");
+      {
+        bool custom = GetCvarB("ge_custom_textures");
+        if (ImGui::Checkbox("Use custom textures", &custom)) {
+          SetCvarB("ge_custom_textures", custom);
+          if (callbacks_.persist_config) callbacks_.persist_config();
+        }
+        ImGui::SameLine();
+        ImGui::TextColored(ImColor(kInkDim), "(applies after restart)");
+        if (ImGui::Button("Restart now")) {
+          if (callbacks_.persist_config) callbacks_.persist_config();
+          if (callbacks_.request_restart) callbacks_.request_restart();
+        }
+
+        TextureExportJob& job = ExportJob();
+        const bool exporting = job.running;
+        ImGui::BeginDisabled(exporting);
+        if (ImGui::Button("Export character textures")) StartTextureExport(true);
+        ImGui::SameLine();
+        if (ImGui::Button("Export all textures")) StartTextureExport(false);
+        ImGui::EndDisabled();
+        if (exporting) {
+          ImGui::Text("Exporting... %d / %d game files, %d textures", job.progress.files_done.load(),
+                      job.progress.files_total.load(), job.progress.textures_written.load());
+          ImGui::SameLine();
+          if (ImGui::Button("Cancel")) job.progress.cancel = true;
+        } else {
+          std::lock_guard<std::mutex> lock(job.mutex);
+          if (!job.status.empty()) ImGui::TextColored(ImColor(kInk), "%s", job.status.c_str());
+        }
+        if (ImGui::Button("Open textures folder")) {
+          ge::textures::WriteReadme(ge::textures::Folder());
+          OpenFolder(ge::textures::Folder());
+        }
+        ImGui::TextColored(ImColor(kInkDim),
+                           "(copy textures from Export/ to Replace/ and edit them; see README.txt)");
       }
 
       ImGui::Spacing();
