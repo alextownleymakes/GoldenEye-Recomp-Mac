@@ -20,7 +20,8 @@
 #   5. Downloads N64ModernRuntime (the console's OS, threads and memory),
 #      RT64 (graphics, drawn with Metal) and SDL2 (window, sound, controllers)
 #      at fixed revisions, once.
-#   6. Builds GoldenEye 64.app inside the GoldenEye app (or in GE_APP_DIR).
+#   6. Builds GoldenEye 64.app into ~/Library/Application Support/GoldenEye/Games
+#      (or GE_APP_DIR), where the GoldenEye app plays it.
 #
 # Options: JOBS=n (parallel compiles), CLEAN=1 (redo the recompile step).
 #
@@ -51,6 +52,19 @@ APP_NAME="GoldenEye 64.app"
 bold() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
 note() { printf '    %s\n' "$*"; }
 die()  { printf '\n\033[31mError:\033[0m %s\n' "$*" >&2; exit 1; }
+# A CMake build folder remembers where its sources were. After the project
+# folder moves, start that build folder over.
+drop_stale_build() {  # <build dir> <source dir>
+  local cache="$1/CMakeCache.txt" src
+  [[ -f "$cache" ]] || return 0
+  src="$(sed -n 's/^CMAKE_HOME_DIRECTORY:INTERNAL=//p' "$cache" | head -1)"
+  if [[ -n "$src" && "$src" != "$2" && "$src" != "$(cd "$2" && pwd -P)" ]]; then
+    note "Project folder moved (was $src); starting a fresh build there"
+    rm -rf "$1"
+    return 1
+  fi
+  return 0
+}
 
 [[ "$(uname -s)" == "Darwin" ]] || die "This script is for macOS."
 
@@ -188,6 +202,7 @@ if [[ ! -f "$STAMP" || "$(cat "$STAMP")" != "$WANT_STAMP" || ! -x "$RECOMP_DIR/b
   rm -f "$STAMP"
 
   bold "Building N64Recomp"
+  drop_stale_build "$RECOMP_DIR/build" "$RECOMP_DIR" || true
   cmake -S "$RECOMP_DIR" -B "$RECOMP_DIR/build" -G Ninja -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_POLICY_VERSION_MINIMUM=3.5 >/dev/null \
     || die "Couldn't configure N64Recomp."
@@ -263,6 +278,7 @@ if [[ ! -f "$SDL_DIR/lib/cmake/SDL2/SDL2Config.cmake" ]]; then
     tar -xzf "$DEPS/sdl2.tar.gz" -C "$DEPS" || die "Couldn't unpack SDL."
     rm -f "$DEPS/sdl2.tar.gz"
   fi
+  drop_stale_build "$sdl_src/build" "$sdl_src" || true
   cmake -S "$sdl_src" -B "$sdl_src/build" -G Ninja -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_INSTALL_PREFIX="$SDL_DIR" -DSDL_SHARED=ON -DSDL_STATIC=OFF -DSDL_TEST=OFF \
     -DCMAKE_POLICY_VERSION_MINIMUM=3.5 >/dev/null \
@@ -285,6 +301,7 @@ done
 # --- 6. App ---------------------------------------------------------------------
 bold "Building GoldenEye 64.app (this is the long part the first time)"
 APP_BUILD="$ROOT/out/build/n64"
+drop_stale_build "$APP_BUILD" "$N64_DIR/app" || true
 cmake -S "$N64_DIR/app" -B "$APP_BUILD" -G Ninja -DCMAKE_BUILD_TYPE=Release \
   -DGE64_RECOMPILED_DIR="$OUT" -DGE64_RUNTIME_DIR="$RUNTIME_DIR" -DGE64_RT64_DIR="$RT64_DIR" \
   -DSDL2_DIR="$SDL_DIR/lib/cmake/SDL2" -DCMAKE_POLICY_VERSION_MINIMUM=3.5 >/dev/null \
@@ -293,7 +310,7 @@ cmake --build "$APP_BUILD" --target GoldenEye64 -j "$JOBS" || die "$APP_NAME did
 [[ -x "$APP_BUILD/GoldenEye64" ]] || die "Build finished but the GoldenEye64 program is missing."
 
 bold "Packaging GoldenEye 64.app"
-APP_DIR="${GE_APP_DIR:-$ROOT/GoldenEye.app/Contents/Games}"  # the GoldenEye app plays it from there
+APP_DIR="${GE_APP_DIR:-$HOME/Library/Application Support/GoldenEye/Games}"  # the GoldenEye app plays it from there
 mkdir -p "$APP_DIR"
 APP="$APP_DIR/$APP_NAME"
 rm -rf "$APP"

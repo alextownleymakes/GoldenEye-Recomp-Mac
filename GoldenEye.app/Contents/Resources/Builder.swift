@@ -104,6 +104,8 @@ final class Builder: NSObject, NSApplicationDelegate, NSWindowDelegate {
   var logView: NSTextView!
   var updateLabel: NSTextField!
   var updateButton: NSButton!
+  var cleanButton: NSButton!
+  var locateButton: NSButton!
 
   let xbox = Version(kind: .xbox)
   let n64 = Version(kind: .n64)
@@ -133,12 +135,14 @@ final class Builder: NSObject, NSApplicationDelegate, NSWindowDelegate {
     buildWindow()
     NSApp.activate(ignoringOtherApps: true)
 
-    guard let r = findProject() else {
-      NSApp.terminate(nil)
-      return
+    // The built games don't need the project folder; only building and
+    // updates do. Without it, this window still plays them.
+    root = findProject()
+    if root != nil {
+      if relocate() { return }
+      if syncFromProject() { return }
+      adoptOldBuilds()
     }
-    root = r
-    adoptOldBuilds()
     watchForGameExit()
     // Clear the download quarantine on this app so macOS stops running it
     // from a temporary copy (and stops asking) on later launches.
@@ -152,6 +156,15 @@ final class Builder: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
     refreshButtons()
 
+    if root == nil {
+      let built = versions.filter { isBuilt($0) }.map { $0.shortName }
+      setStatus(built.isEmpty
+        ? "The project folder isn't on this Mac. Download it, or locate it, to build the games."
+        : built.joined(separator: " and ") + (built.count == 1 ? " is" : " are")
+          + " ready to play. Building and updates need the project folder.")
+      showNoProject()
+      return
+    }
     if defaults.bool(forKey: "justUpdated") {
       defaults.set(false, forKey: "justUpdated")
       setStatus("Updated to the latest version. Build again to get the changes.")
@@ -170,10 +183,13 @@ final class Builder: NSObject, NSApplicationDelegate, NSWindowDelegate {
     FileManager.default.fileExists(atPath: u.appendingPathComponent("macos/build-macos.sh").path)
   }
 
-  // The project folder: the one this app is in. If macOS is running the app
-  // from a temporary copy (a fresh download), use the remembered folder, or
-  // ask once.
+  // The project folder: in Application Support once moved there, else the one
+  // this app is in, else the remembered one. nil if none (Locate… finds it).
   func findProject() -> URL? {
+    if isProject(projectHome()) {
+      defaults.set(projectHome().path, forKey: "projectPath")
+      return projectHome()
+    }
     let parent = bundleURL.deletingLastPathComponent()
     if isProject(parent) {
       defaults.set(parent.path, forKey: "projectPath")
@@ -182,19 +198,6 @@ final class Builder: NSObject, NSApplicationDelegate, NSWindowDelegate {
     if let saved = defaults.string(forKey: "projectPath") {
       let u = URL(fileURLWithPath: saved)
       if isProject(u) { return u }
-    }
-    let panel = NSOpenPanel()
-    panel.canChooseFiles = false
-    panel.canChooseDirectories = true
-    panel.allowsMultipleSelection = false
-    panel.message = "Select the GoldenEye-Recomp-Mac folder (the one this app came in)."
-    panel.prompt = "Use This Folder"
-    while panel.runModal() == .OK, let u = panel.url {
-      if isProject(u) {
-        defaults.set(u.path, forKey: "projectPath")
-        return u
-      }
-      alert("That isn't the GoldenEye project folder", "Choose the folder that contains the GoldenEye app and the macos folder.")
     }
     return nil
   }
@@ -308,7 +311,13 @@ final class Builder: NSObject, NSApplicationDelegate, NSWindowDelegate {
     updateLabel.textColor = .secondaryLabelColor
     updateButton = button("Update", #selector(applyUpdate), 0)
     updateButton.isHidden = true
-    let updateRow = NSStackView(views: [updateLabel!, updateButton!])
+    locateButton = button("Locate Project…", #selector(locateProject), 0)
+    locateButton.isHidden = true
+    cleanButton = button("Free Up Space", #selector(freeUpSpace), 0)
+    cleanButton.toolTip = "Delete build leftovers (several GB). Built games stay playable; the next build takes longer."
+    let spacer = NSView()
+    spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+    let updateRow = NSStackView(views: [updateLabel!, updateButton!, locateButton!, spacer, cleanButton!])
     updateRow.orientation = .horizontal
     updateRow.spacing = 8
 
@@ -340,40 +349,151 @@ final class Builder: NSObject, NSApplicationDelegate, NSWindowDelegate {
     (sender as? NSButton)?.tag == 1 ? n64 : xbox
   }
 
-  // Built games live inside this app, so it's the one thing to open.
-  // This app's bundle in the project folder. (When macOS runs a fresh
-  // download from a temporary copy, bundleURL isn't in the project folder, so
-  // look for the bundle that holds this app's source there.)
+  // This app's bundle. When macOS runs a fresh download from a temporary
+  // copy, bundleURL is that copy, so use the bundle in the project folder.
   func appBundle() -> URL {
-    if bundleURL.deletingLastPathComponent().standardizedFileURL == root!.standardizedFileURL { return bundleURL }
-    let named = root!.appendingPathComponent(bundleURL.lastPathComponent)
+    if !bundleURL.path.contains("/AppTranslocation/") || root == nil { return bundleURL }
+    return projectApp() ?? root!.appendingPathComponent(bundleURL.lastPathComponent)
+  }
+
+  // The copy of this app that came with the project (updates land there).
+  func projectApp() -> URL? {
+    guard let r = root else { return nil }
+    let named = r.appendingPathComponent("GoldenEye.app")
     if isThisApp(named) { return named }
-    let items = (try? FileManager.default.contentsOfDirectory(at: root!, includingPropertiesForKeys: nil)) ?? []
-    return items.first(where: { $0.pathExtension == "app" && isThisApp($0) }) ?? named
+    let items = (try? FileManager.default.contentsOfDirectory(at: r, includingPropertiesForKeys: nil)) ?? []
+    return items.first(where: { $0.pathExtension == "app" && isThisApp($0) })
   }
 
   func isThisApp(_ u: URL) -> Bool {
     FileManager.default.fileExists(atPath: u.appendingPathComponent("Contents/Resources/Builder.swift").path)
   }
 
-  func gamesDir() -> URL { appBundle().appendingPathComponent("Contents/Games") }
+  // Where the project lives once the app has tidied itself up.
+  func projectHome() -> URL {
+    let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+    return support.appendingPathComponent("GoldenEye/Project")
+  }
+
+  // First launch from a download: put this app in Applications and the rest
+  // of the project (code, tools, builds) in Application Support, so the
+  // downloaded folder can go. Returns true if it moved and is restarting.
+  func relocate() -> Bool {
+    let fm = FileManager.default
+    let from = root!.standardizedFileURL
+    let home = projectHome()
+    if from.path == home.standardizedFileURL.path { return false }
+    if defaults.string(forKey: "keepProjectAt") == from.path { return false }
+
+    let a = NSAlert()
+    a.messageText = "Move GoldenEye into Applications?"
+    a.informativeText = "The app goes in Applications, and everything else it needs (code, tools, builds) "
+      + "goes in your Library's Application Support folder. The folder you downloaded is then no longer needed."
+    a.addButton(withTitle: "Move")
+    a.addButton(withTitle: "Keep It Here")
+    if a.runModal() != .alertFirstButtonReturn {
+      defaults.set(from.path, forKey: "keepProjectAt")
+      return false
+    }
+
+    if fm.fileExists(atPath: home.path) { try? fm.removeItem(at: home) }
+    try? fm.createDirectory(at: home.deletingLastPathComponent(), withIntermediateDirectories: true)
+    do { try fm.moveItem(at: from, to: home) } catch {
+      alert("Couldn't move GoldenEye", error.localizedDescription + "\n\nIt will keep working from where it is.")
+      return false
+    }
+    root = home
+    defaults.set(home.path, forKey: "projectPath")
+    if defaults.bool(forKey: Builder.checkoutKey(from.path)) {
+      defaults.set(true, forKey: Builder.checkoutKey(home.path))
+    }
+    for v in versions {  // game files chosen from inside the old folder
+      if let p = defaults.string(forKey: v.pathKey), p.hasPrefix(from.path + "/") {
+        defaults.set(home.path + p.dropFirst(from.path.count), forKey: v.pathKey)
+      }
+    }
+
+    // The app itself: /Applications, or ~/Applications if that isn't writable.
+    guard let src = projectApp() else { return false }
+    var apps = URL(fileURLWithPath: "/Applications")
+    if !fm.isWritableFile(atPath: apps.path) {
+      apps = fm.homeDirectoryForCurrentUser.appendingPathComponent("Applications")
+      try? fm.createDirectory(at: apps, withIntermediateDirectories: true)
+    }
+    var dest = apps.appendingPathComponent("GoldenEye.app")
+    if fm.fileExists(atPath: dest.path) && !isThisApp(dest) {
+      dest = apps.appendingPathComponent("GoldenEye Builder.app")
+    }
+    if isThisApp(dest) { try? fm.removeItem(at: dest) }
+    do { try fm.copyItem(at: src, to: dest) } catch {
+      alert("Moved GoldenEye's files, but couldn't add the app to Applications",
+            error.localizedDescription + "\n\nThe app is in " + src.path + ".")
+      dest = src
+    }
+    _ = Builder.run("/usr/bin/xattr", ["-dr", "com.apple.quarantine", dest.path])
+    Builder.run("/usr/bin/open", ["-n", dest.path])
+    NSApp.terminate(nil)
+    return true
+  }
+
+  // Built games live next to the settings, so any copy of this app (in the
+  // project folder, in Applications, anywhere) plays the same ones.
+  func gamesDir() -> URL {
+    let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+    return support.appendingPathComponent("GoldenEye/Games")
+  }
 
   func appURL(_ v: Version) -> URL { gamesDir().appendingPathComponent(v.appName) }
 
-  // Earlier versions of the builder left the games in the project folder.
-  // Move them in so they don't need building again.
+  // When this copy lives outside the project folder, keep it in step with
+  // the project's copy (which is what updates change). Returns true if it
+  // updated itself and is restarting.
+  func syncFromProject() -> Bool {
+    let fm = FileManager.default
+    let here = bundleURL.standardizedFileURL
+    if here.path.contains("/AppTranslocation/") { return false }
+    if here.deletingLastPathComponent().path == root!.standardizedFileURL.path { return false }
+    // Moved out rather than copied: put the project's copy back from git.
+    if projectApp() == nil, fm.fileExists(atPath: root!.appendingPathComponent(".git").path) {
+      _ = Builder.git(root!.path, ["checkout", "--", "GoldenEye.app"])
+    }
+    guard let src = projectApp()?.standardizedFileURL, src.path != here.path else { return false }
+    let parts = ["Contents/Resources/Builder.swift", "Contents/Resources/AppIcon.icns",
+                 "Contents/Info.plist", "Contents/MacOS/GoldenEye Builder"]
+    var changed = false
+    for part in parts {
+      let a = src.appendingPathComponent(part), b = here.appendingPathComponent(part)
+      guard let new = fm.contents(atPath: a.path), fm.contents(atPath: b.path) != new else { continue }
+      try? fm.removeItem(at: b)
+      if (try? fm.copyItem(at: a, to: b)) != nil { changed = true }
+    }
+    guard changed else { return false }
+    Builder.run("/usr/bin/open", ["-n", here.path])
+    NSApp.terminate(nil)
+    return true
+  }
+
+  // Earlier versions of the builder kept the games in the project folder,
+  // then inside the app. Move them over so they don't need building again.
   func adoptOldBuilds() {
     let fm = FileManager.default
+    var oldDirs = [root!, bundleURL.appendingPathComponent("Contents/Games")]
+    if let p = projectApp() { oldDirs.append(p.appendingPathComponent("Contents/Games")) }
     for v in versions {
-      let old = root!.appendingPathComponent(v.appName)
-      guard fm.fileExists(atPath: old.path), !isThisApp(old), !fm.fileExists(atPath: appURL(v).path) else { continue }
-      try? fm.createDirectory(at: gamesDir(), withIntermediateDirectories: true)
-      try? fm.moveItem(at: old, to: appURL(v))
+      for dir in oldDirs {
+        let old = dir.appendingPathComponent(v.appName)
+        guard fm.fileExists(atPath: old.path), !isThisApp(old), !fm.fileExists(atPath: appURL(v).path) else { continue }
+        try? fm.createDirectory(at: gamesDir(), withIntermediateDirectories: true)
+        try? fm.moveItem(at: old, to: appURL(v))
+      }
+    }
+    for dir in oldDirs.dropFirst() where (try? fm.contentsOfDirectory(atPath: dir.path))?.isEmpty == true {
+      try? fm.removeItem(at: dir)
     }
   }
 
   func isBuilt(_ v: Version) -> Bool {
-    root != nil && FileManager.default.fileExists(atPath: appURL(v).path)
+    FileManager.default.fileExists(atPath: appURL(v).path)
   }
 
   // Game files already in the project's assets folder (used when nothing
@@ -407,11 +527,13 @@ final class Builder: NSObject, NSApplicationDelegate, NSWindowDelegate {
     let busy = task != nil
     for v in versions {
       let built = isBuilt(v)
-      v.buildButton.isEnabled = !busy && playing !== v  // can't replace a game that's running
-      v.chooseButton.isEnabled = !busy
+      v.buildButton.isEnabled = !busy && playing !== v && root != nil  // can't replace a running game
+      v.chooseButton.isEnabled = !busy && root != nil
       v.openButton.isEnabled = built && building !== v && playing == nil
     }
     updateButton.isEnabled = !busy
+    cleanButton.isEnabled = !busy && root != nil
+    locateButton.isEnabled = !busy
   }
 
   func setBusy(_ busy: Bool) {
@@ -422,6 +544,8 @@ final class Builder: NSObject, NSApplicationDelegate, NSWindowDelegate {
         v.chooseButton.isEnabled = false
       }
       updateButton.isEnabled = false
+      cleanButton.isEnabled = false
+      locateButton.isEnabled = false
     }
   }
 
@@ -818,9 +942,10 @@ final class Builder: NSObject, NSApplicationDelegate, NSWindowDelegate {
   nonisolated static func checkoutKey(_ root: String) -> String { "needsCheckout:" + root }
 
   func checkForUpdates() {
+    guard let r = root else { return }
     updateLabel.stringValue = "Checking for updates…"
     updateButton.isHidden = true
-    let rootPath = root!.path
+    let rootPath = r.path
     DispatchQueue.global(qos: .utility).async {
       let result = Builder.updateStatus(rootPath)
       Task { @MainActor in
@@ -877,6 +1002,9 @@ final class Builder: NSObject, NSApplicationDelegate, NSWindowDelegate {
     setBusy(true)
     updateLabel.stringValue = "Updating…"
     DispatchQueue.global(qos: .userInitiated).async {
+      if !FileManager.default.fileExists(atPath: rootPath + "/GoldenEye.app/Contents/Resources/Builder.swift") {
+        _ = Builder.git(rootPath, ["checkout", "--", "GoldenEye.app"])
+      }
       let res = kind == "checkout"
         ? Builder.git(rootPath, ["checkout", "--", "."])
         : Builder.git(rootPath, ["pull", "--ff-only", "origin", kBranch])
@@ -901,6 +1029,139 @@ final class Builder: NSObject, NSApplicationDelegate, NSWindowDelegate {
                        + "avoid overwriting them. You can download the project again from GitHub instead.\n\n"
                        + message)
         }
+      }
+    }
+  }
+
+  // MARK: - Without the project folder
+
+  func showNoProject() {
+    updateLabel.stringValue = "No project folder: building and updates are off."
+    updateButton.title = "Download Project"
+    updateButton.action = #selector(downloadProject)
+    updateButton.isHidden = false
+    locateButton.isHidden = false
+    cleanButton.isHidden = true
+    refreshButtons()
+  }
+
+  func restart() {
+    Builder.run("/usr/bin/open", ["-n", bundleURL.path])
+    NSApp.terminate(nil)
+  }
+
+  @objc func locateProject() {
+    let panel = NSOpenPanel()
+    panel.canChooseFiles = false
+    panel.canChooseDirectories = true
+    panel.allowsMultipleSelection = false
+    panel.message = "Select the GoldenEye-Recomp-Mac folder."
+    panel.prompt = "Use This Folder"
+    while panel.runModal() == .OK, let u = panel.url {
+      if isProject(u) {
+        defaults.set(u.path, forKey: "projectPath")
+        restart()
+        return
+      }
+      alert("That isn't the GoldenEye project folder", "Choose the folder that contains the macos folder.")
+    }
+  }
+
+  // Get the project again (latest version only, not its history) into
+  // Application Support, then restart with it.
+  @objc func downloadProject() {
+    guard task == nil else { return }
+    let home = projectHome()
+    setBusy(true)
+    updateLabel.stringValue = "Downloading the project…"
+    progress.isIndeterminate = true
+    progress.startAnimation(nil)
+    DispatchQueue.global(qos: .userInitiated).async {
+      let fm = FileManager.default
+      if fm.fileExists(atPath: home.path) { try? fm.removeItem(at: home) }
+      try? fm.createDirectory(at: home.deletingLastPathComponent(), withIntermediateDirectories: true)
+      let res = Builder.run("/usr/bin/git", ["clone", "-q", "--depth", "1", "--branch", kBranch, kRepoURL, home.path])
+      Task { @MainActor in
+        self.progress.stopAnimation(nil)
+        self.progress.isIndeterminate = false
+        if res.0 == 0 {
+          self.defaults.set(home.path, forKey: "projectPath")
+          self.restart()
+        } else {
+          self.setBusy(false)
+          self.updateLabel.stringValue = "Download failed."
+          self.alert("Couldn't download the project", "Check your internet connection and try again.\n\n" + res.1)
+        }
+      }
+    }
+  }
+
+  // MARK: - Free up space
+
+  // Build leftovers the next build makes again: the game builds, the
+  // recompiled code, the SDK's build folder (its installed copy stays, so the
+  // SDK isn't rebuilt) and SDL's sources (its installed copy stays). Built
+  // games, game files, settings and downloaded tools stay.
+  nonisolated static func cleanupTargets(_ root: String) -> [String] {
+    var t = [root + "/out/build", root + "/out/n64", root + "/generated",
+             root + "/macos/.deps/rexglue-sdk/out/build"]
+    let deps = root + "/macos/.deps"
+    for name in (try? FileManager.default.contentsOfDirectory(atPath: deps)) ?? [] where name.hasPrefix("SDL2-") {
+      t.append(deps + "/" + name)
+    }
+    return t.filter { FileManager.default.fileExists(atPath: $0) }
+  }
+
+  nonisolated static func diskSize(_ path: String) -> Int64 {
+    let keys: [URLResourceKey] = [.totalFileAllocatedSizeKey, .isRegularFileKey]
+    guard let e = FileManager.default.enumerator(at: URL(fileURLWithPath: path), includingPropertiesForKeys: keys)
+    else { return 0 }
+    var total: Int64 = 0
+    for case let f as URL in e {
+      if let v = try? f.resourceValues(forKeys: Set(keys)), v.isRegularFile == true {
+        total += Int64(v.totalFileAllocatedSize ?? 0)
+      }
+    }
+    return total
+  }
+
+  @objc func freeUpSpace() {
+    guard task == nil, let r = root else { return }
+    let rootPath = r.path
+    setBusy(true)
+    setStatus("Working out how much space the build leftovers take…")
+    DispatchQueue.global(qos: .userInitiated).async {
+      let targets = Builder.cleanupTargets(rootPath)
+      let size = targets.reduce(Int64(0)) { $0 + Builder.diskSize($1) }
+      Task { @MainActor in self.confirmFreeUp(targets, size) }
+    }
+  }
+
+  func confirmFreeUp(_ targets: [String], _ size: Int64) {
+    setBusy(false)
+    let text = ByteCountFormatter.string(fromByteCount: size, countStyle: .file)
+    if size < 20_000_000 {
+      setStatus("Nothing to clean up.")
+      return
+    }
+    let a = NSAlert()
+    a.messageText = "Free up \(text)?"
+    a.informativeText = "This deletes build leftovers in the project folder. The games you've built stay "
+      + "playable, and your game files and settings are kept. The next build takes longer, because it "
+      + "compiles the game again."
+    a.addButton(withTitle: "Free Up Space")
+    a.addButton(withTitle: "Cancel")
+    guard a.runModal() == .alertFirstButtonReturn else {
+      setStatus("")
+      return
+    }
+    setBusy(true)
+    setStatus("Deleting build leftovers…")
+    DispatchQueue.global(qos: .userInitiated).async {
+      for t in targets { try? FileManager.default.removeItem(atPath: t) }
+      Task { @MainActor in
+        self.setBusy(false)
+        self.setStatus("Freed \(text). Your built games are still here.")
       }
     }
   }

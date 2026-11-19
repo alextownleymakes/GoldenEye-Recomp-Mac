@@ -11,7 +11,7 @@ This folder turns the project into a native macOS app (`GoldenEye.app`) for Appl
 
 ## Build
 
-The easy way: double-click the **GoldenEye** app in the project folder. It installs what's missing, asks for your game files (and remembers them), builds with a progress bar, and checks GitHub for updates. See the main README for the one-time macOS security step.
+The easy way: double-click the **GoldenEye** app. On first launch it offers to move itself to Applications and the project to `~/Library/Application Support/GoldenEye/Project` (choose **Keep It Here** to work on the code in place). It installs what's missing, asks for your game files (and remembers them), builds with a progress bar, and checks GitHub for updates. See the main README for the one-time macOS security step.
 
 From Terminal:
 
@@ -22,7 +22,7 @@ bash macos/build-macos.sh
 bash macos/build-macos.sh ~/Downloads/GoldenEye_007_XBLA_Retail/0000000000000000/584108A9/000D0000/30BA92710985645EF623D4A6BA9E8EFFAEC62617
 ```
 
-The first run takes a while. The SDK build alone is roughly 15–40 minutes on an M-series Mac, and later runs reuse it. When the script finishes, the game is inside the GoldenEye app in the project folder (`GoldenEye.app/Contents/Games/GoldenEye.app`); open the GoldenEye app and click **Play GoldenEye**. Set `GE_APP_DIR=/some/folder` to put the built game somewhere else.
+The first run takes a while. The SDK build alone is roughly 15–40 minutes on an M-series Mac, and later runs reuse it. When the script finishes, the game is in `~/Library/Application Support/GoldenEye/Games/GoldenEye.app`; open the GoldenEye app and click **Play GoldenEye**. Set `GE_APP_DIR=/some/folder` to put the built game somewhere else.
 
 Options:
 
@@ -35,7 +35,7 @@ Options:
 
 ## Run
 
-The build produces a self-contained game app (inside the GoldenEye app, or in `GE_APP_DIR`). Your game files are copied inside it (`Contents/Resources/assets`), as APFS clones, so they take no extra disk space. Play it from the GoldenEye app, or open the game app directly.
+The build produces a self-contained game app (in `~/Library/Application Support/GoldenEye/Games`, or in `GE_APP_DIR`). Your game files are copied inside it (`Contents/Resources/assets`), as APFS clones, so they take no extra disk space. Play it from the GoldenEye app, or open the game app directly.
 
 * Settings: `~/Library/Application Support/GoldenEye/ge.toml`
 * Logs: `~/Library/Logs/GoldenEye/`, also viewable in Console.app

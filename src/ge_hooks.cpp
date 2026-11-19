@@ -1747,6 +1747,27 @@ void ge_inject_keyboard(PPCRegister& /*r11*/) {
     }
   }
 
+  // Third-person camera toggle: D-pad down (or the keyboard's D-pad-down key)
+  // in gameplay. The press is taken out of the pad so the game doesn't also
+  // act on it.
+  if (ge_in_gameplay() && !g_rebind_capturing.load(std::memory_order_relaxed)) {
+    static bool prev[4] = {false, false, false, false};
+    const bool kb_active = REXCVAR_GET(ge_keyboard_enable) && ge_input_active();
+    for (uint32_t i = 0; i < 4; ++i) {
+      const uint32_t pad = GE_PAD0 + GE_PAD_STRIDE * i;
+      const uint16_t buttons = LD16(base, pad);
+      bool pressed = (buttons & BTN_DPAD_DOWN) != 0;
+      if (pressed) ST16(base, pad, static_cast<uint16_t>(buttons & ~BTN_DPAD_DOWN));
+      if (i == 0 && kb_active && ge_key_down("ge_key_ddown")) pressed = true;
+      if (pressed && !prev[i]) {
+        const bool on = rex::cvar::GetFlagByName("ge_third_person") == "true";
+        rex::cvar::SetFlagByName("ge_third_person", on ? "false" : "true");
+        REXKRNL_INFO("GETP third-person {} (D-pad down, pad {})", on ? "off" : "on", i);
+      }
+      prev[i] = pressed;
+    }
+  }
+
   // Rebind capture: the menu is listening for a key to bind. Swallow ALL slot-0
   // controller input (buttons, triggers, both sticks) so the key/button being
   // bound doesn't also drive the game, and skip keyboard injection + mouse-look.
@@ -3145,6 +3166,7 @@ void ge_jump(PPCRegister& r11) {
     m.player = player;
     m.frames = 0;
     m.nod = 0.f;
+    m.start = from_feet;  // also used by the third-person body's climb pose
     if (rise <= 0.f) {
       ge_place_on_top(base, player, idx, m);
       return;
@@ -3951,4 +3973,357 @@ void ge_dbg_music_flag_read(PPCRegister& r11) {
 void ge_dbg_music_flag_set(PPCRegister& r11) {
   PPCContext* ctx; uint8_t* base; getcb(ctx, base); (void)base;
   ge_music_log(fmt::format("flag set to {} (in {:08X})", r11.u32, (uint32_t)ctx->lr));
+}
+
+// ---------------------------------------------------------------------------
+// THIRD-PERSON CAMERA (mod).
+//
+// The game already has an outside camera: during the mission intro and when
+// Bond dies, player+0x80 is 1 and the view is built from an explicit eye
+// (+0x84), target (+0x90) and up (+0x9C) instead of Bond's eyes (+0x5DC eye,
+// +0x5E8 look direction, +0x5F4 up). With that flag set, the draw pass also
+// shows Bond's own body and leaves out the first-person gun.
+//
+// The flag also switches off Bond's gameplay (gun, HUD, firing) in the game
+// tick, so it is only raised around the render: sub_82188D50 renders the frame
+// with bl sub_820AE320 at 0x82188DB0 (-> sub_8209EC28: view, characters, gun),
+// and the hooks either side of that call set it and put it back.
+//
+// After a few seconds without moving or turning, the camera slowly circles Bond.
+// ---------------------------------------------------------------------------
+REXCVAR_DEFINE_BOOL(ge_third_person, false, "Display",
+                    "Third-person camera (mod): view Bond from behind; circles him when idle");
+REXCVAR_DEFINE_DOUBLE(ge_tp_distance, 170.0, "Display",
+                      "Third-person camera distance behind Bond").range(60.0, 500.0);
+
+namespace {
+constexpr uint32_t kTpExternal = 0x80u;   // 1 = outside camera
+constexpr uint32_t kTpEye = 0x84u, kTpTarget = 0x90u, kTpUp = 0x9Cu, kTpRoom = 0xB4u;
+constexpr uint32_t kTpFpEye = 0x5DCu, kTpFpDir = 0x5E8u;
+constexpr uint32_t kTpDead = 0x1E0u;
+constexpr uint32_t kTpProp = 0x1ACu, kTpModel = 0x1DCu;  // Bond's prop, his body model
+// Character flags (chr+0x14) that make the game skip drawing a character.
+constexpr uint32_t kTpChrHidden = 0x00000400u | 0x20000000u;
+constexpr uint32_t kTpPosX = 0x5B4u, kTpPosZ = 0x5BCu, kTpYaw = 0x254u, kTpPitch = 0x264u;
+constexpr double kTpIdleSeconds = 5.0;
+constexpr double kTpOrbitDegPerSec = 20.0;
+
+struct TpSlot {
+  bool active = false;          // flag raised for this draw
+  uint32_t player = 0;
+  uint32_t saved_external = 0, saved_room = 0;
+  uint32_t chr = 0, saved_chr_flags = 0;  // Bond's character, its flags before the draw
+  uint32_t saved_pos[7] = {0, 0, 0, 0, 0, 0, 0};  // player room+pos (+0x5B0..), eye (+0x5DC..)
+  bool body_synced = false;
+  float last[4] = {0, 0, 0, 0};  // x, z, yaw, pitch
+  bool have_last = false;
+  std::chrono::steady_clock::time_point still_since{};
+  double orbit_deg = 0.0;
+  std::chrono::steady_clock::time_point last_draw{};
+};
+TpSlot g_tp[4];
+uint32_t g_tp_body[4] = {0, 0, 0, 0};  // body model we created for third person (0 = none)
+bool g_tp_drawing = false;             // the third-person view is being drawn
+
+// Bond only has a body in the intro and when he dies; in normal play his model
+// is deleted. sub_820B5A38 creates it (as the intro/death code does) and
+// sub_820B5EF0 deletes it, both for g_CurrentPlayer. Called mid-frame, so the
+// guest registers are saved and put back around the call.
+// Put Bond's body where Bond is, facing his way: the model position and turn
+// calls the body-creating code makes (sub_82119118 position, sub_82119178
+// angle). The angle is worked out the same way it does, from his yaw.
+void tp_place_body(PPCContext* ctx, uint8_t* base, uint32_t p, uint32_t prop, uint32_t model) {
+  for (uint32_t k = 0; k < 3; ++k) ST32(base, prop + 12u + 4u * k, LD32(base, p + 0x5B4u + 4u * k));
+  ST32(base, prop + 24u, LD32(base, p + 0x5B0u));  // room / tile
+  const float yaw = LDF32(base, p + 0x254u);
+  const float angle = (LDF32(base, 0x82000000u + 14020u) - yaw) * LDF32(base, 0x82000000u + 13980u);
+  alignas(16) uint8_t saved[sizeof(PPCContext)];
+  std::memcpy(saved, ctx, sizeof(PPCContext));
+  ctx->r3.u64 = model;
+  ctx->r4.u64 = prop + 12u;
+  sub_82119118(*ctx, base);
+  ctx->r3.u64 = model;
+  ctx->f1.f64 = angle;
+  sub_82119178(*ctx, base);
+  std::memcpy(ctx, saved, sizeof(PPCContext));
+}
+
+void tp_call_for_player(PPCContext* ctx, uint8_t* base, uint32_t p, bool create) {
+  alignas(16) uint8_t saved[sizeof(PPCContext)];
+  std::memcpy(saved, ctx, sizeof(PPCContext));
+  const uint32_t cur = LD32(base, GE_BONDVIEW_CUR);
+  ST32(base, GE_BONDVIEW_CUR, p);
+  if (create) sub_820B5A38(*ctx, base);
+  else sub_820B5EF0(*ctx, base);
+  ST32(base, GE_BONDVIEW_CUR, cur);
+  std::memcpy(ctx, saved, sizeof(PPCContext));
+}
+
+void tp_store3(uint8_t* base, uint32_t at, const float v[3]) {
+  STF32(base, at, v[0]); STF32(base, at + 4, v[1]); STF32(base, at + 8, v[2]);
+}
+}  // namespace
+
+// Works out this frame's third-person camera for slot i (player p) from Bond's
+// eye and look direction. Returns false when third person doesn't apply.
+static bool tp_camera(uint8_t* base, uint32_t i, uint32_t p, float cam[3], float target[3]) {
+  TpSlot& s = g_tp[i];
+  float eye[3], dir[3];
+  for (int k = 0; k < 3; ++k) {
+    eye[k] = LDF32(base, p + kTpFpEye + 4u * k);
+    dir[k] = LDF32(base, p + kTpFpDir + 4u * k);
+  }
+  const float len = std::sqrt(dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]);
+  if (!(len > 1e-4f) || !std::isfinite(eye[0])) return false;
+  for (float& d : dir) d /= len;
+  const float dist = static_cast<float>(REXCVAR_GET(ge_tp_distance));
+  const bool orbiting = s.orbit_deg > 0.0;
+  if (!orbiting) {
+    // Behind and a little above Bond's eyes, looking the way he looks.
+    cam[0] = eye[0] - dir[0] * dist;
+    cam[1] = eye[1] - dir[1] * dist + dist * 0.18f;
+    cam[2] = eye[2] - dir[2] * dist;
+    for (int k = 0; k < 3; ++k) target[k] = cam[k] + dir[k] * 100.0f;
+  } else {
+    // Circle Bond, looking at his head, starting from behind him.
+    float hx = dir[0], hz = dir[2];
+    const float hl = std::sqrt(hx * hx + hz * hz);
+    if (hl > 1e-4f) { hx /= hl; hz /= hl; } else { hx = 0.0f; hz = 1.0f; }
+    const double a = s.orbit_deg * 3.14159265358979 / 180.0;
+    const float ca = static_cast<float>(std::cos(a)), sa = static_cast<float>(std::sin(a));
+    const float bx = -(hx * ca - hz * sa), bz = -(hx * sa + hz * ca);
+    cam[0] = eye[0] + bx * dist;
+    cam[1] = eye[1] + dist * 0.25f;
+    cam[2] = eye[2] + bz * dist;
+    target[0] = eye[0]; target[1] = eye[1] - 10.0f; target[2] = eye[2];
+  }
+  return true;
+}
+
+static int tp_slot_of(uint8_t* base, uint32_t p) {
+  for (uint32_t i = 0; i < 4; ++i)
+    if (LD32(base, 0x82F1FA98u + i * 4u) == p) return static_cast<int>(i);
+  return -1;
+}
+
+static bool tp_applies(uint8_t* base, uint32_t p) {
+  return REXCVAR_GET(ge_third_person) && p && ge_pad_slot_for_player(base, p) >= 0 &&
+         LD32(base, p + kTpDead) == 0;
+}
+
+// Before the draw pass: update the idle/orbit timer, and raise the outside-
+// camera flag so the game draws Bond's body.
+void ge_tp_begin() {
+  PPCContext* ctx; uint8_t* base; getcb(ctx, base);
+  g_tp_drawing = false;
+  const auto now = std::chrono::steady_clock::now();
+  static auto last_log = now - std::chrono::seconds(10);
+  const bool log_now = REXCVAR_GET(ge_third_person) && now - last_log > std::chrono::seconds(3);
+  if (log_now) last_log = now;
+  for (uint32_t i = 0; i < 4; ++i) {
+    TpSlot& s = g_tp[i];
+    s.active = false;
+    const uint32_t p = LD32(base, 0x82F1FA98u + i * 4u);
+    if (!p) continue;
+    const uint32_t prop = LD32(base, p + kTpProp);
+    const uint32_t chr = prop ? LD32(base, prop + 8u) : 0u;
+    if (log_now) {
+      REXKRNL_INFO("GETP draw: slot {} player {:08X} outside={} dead={} pad={} on={} model={:08X} "
+                   "prop={:08X} type={} chr={:08X} flags={:08X} flags2={:04X}",
+                   i, p, LD32(base, p + kTpExternal), LD32(base, p + kTpDead), ge_pad_slot_for_player(base, p),
+                   REXCVAR_GET(ge_third_person), LD32(base, p + kTpModel), prop, prop ? base[prop] : 0, chr,
+                   chr ? LD32(base, chr + 0x14u) : 0u, chr ? LD16(base, chr + 0x12u) : 0u);
+    }
+    // Single player only: in multiplayer every Bond already has a body.
+    uint32_t players = 0;
+    for (uint32_t k = 0; k < 4; ++k) players += LD32(base, 0x82F1FA98u + k * 4u) != 0;
+    const bool fp = LD32(base, p + kTpExternal) == 0 && LD32(base, p + kTpDead) == 0;
+
+    // Third person switched off (or Bond died / the level changed): delete the
+    // body we made, unless the game has taken it over (death).
+    if (g_tp_body[i] && (!REXCVAR_GET(ge_third_person) || LD32(base, p + kTpModel) != g_tp_body[i])) {
+      if (fp && LD32(base, p + kTpModel) == g_tp_body[i]) {
+        tp_call_for_player(ctx, base, p, false);
+        REXKRNL_INFO("GETP body removed (player {:08X})", p);
+      }
+      g_tp_body[i] = 0;
+    }
+
+    // Only in normal first-person play: not in the intro, death or other
+    // outside cameras.
+    if (!tp_applies(base, p) || !fp) { s.have_last = false; continue; }
+
+    if (players == 1 && LD32(base, p + kTpModel) == 0 && prop && LD32(base, prop + 8u) == 0) {
+      tp_call_for_player(ctx, base, p, true);
+      g_tp_body[i] = LD32(base, p + kTpModel);
+      REXKRNL_INFO("GETP body created (player {:08X}, model {:08X}, chr {:08X})", p, g_tp_body[i],
+                   LD32(base, prop + 8u));
+    }
+    const uint32_t chr_now = prop ? LD32(base, prop + 8u) : 0u;
+    // With a body, the draw moves Bond to the body (that's how the intro and
+    // death scenes work). Keep the body on Bond instead, and put Bond's own
+    // position back after the draw.
+    s.body_synced = false;
+    if (g_tp_body[i] && LD32(base, p + kTpModel) == g_tp_body[i] && chr_now) {
+      for (uint32_t k = 0; k < 4; ++k) s.saved_pos[k] = LD32(base, p + 0x5B0u + 4u * k);
+      for (uint32_t k = 0; k < 3; ++k) s.saved_pos[4 + k] = LD32(base, p + kTpFpEye + 4u * k);
+      tp_place_body(ctx, base, p, prop, g_tp_body[i]);
+      s.body_synced = true;
+    }
+
+    // Idle: Bond hasn't moved or turned.
+    const float cur[4] = {LDF32(base, p + kTpPosX), LDF32(base, p + kTpPosZ),
+                          LDF32(base, p + kTpYaw), LDF32(base, p + kTpPitch)};
+    const bool moved = !s.have_last || s.player != p ||
+                       std::fabs(cur[0] - s.last[0]) > 0.05f || std::fabs(cur[1] - s.last[1]) > 0.05f ||
+                       std::fabs(cur[2] - s.last[2]) > 0.01f || std::fabs(cur[3] - s.last[3]) > 0.01f;
+    const double dt = s.have_last ? std::chrono::duration<double>(now - s.last_draw).count() : 0.0;
+    if (moved) { s.still_since = now; s.orbit_deg = 0.0; }
+    std::memcpy(s.last, cur, sizeof cur);
+    s.have_last = true;
+    s.player = p;
+    s.last_draw = now;
+    if (std::chrono::duration<double>(now - s.still_since).count() >= kTpIdleSeconds) {
+      s.orbit_deg = std::fmod(s.orbit_deg + kTpOrbitDegPerSec * std::min(dt, 0.1), 360.0);
+      if (s.orbit_deg <= 0.0) s.orbit_deg = 1e-3;
+    }
+
+    float cam[3], target[3];
+    if (!tp_camera(base, i, p, cam, target)) continue;
+    const float up[3] = {0.0f, 1.0f, 0.0f};
+    s.saved_external = LD32(base, p + kTpExternal);
+    s.saved_room = LD32(base, p + kTpRoom);
+    tp_store3(base, p + kTpEye, cam);
+    tp_store3(base, p + kTpTarget, target);
+    tp_store3(base, p + kTpUp, up);
+    ST32(base, p + kTpRoom, 0);  // 0 = use Bond's own room for the view
+    ST32(base, p + kTpExternal, 1);
+    // Bond's own character is flagged hidden in first person; show it for the
+    // draw.
+    s.chr = chr_now;
+    if (chr_now) {
+      s.saved_chr_flags = LD32(base, chr_now + 0x14u);
+      ST32(base, chr_now + 0x14u, s.saved_chr_flags & ~kTpChrHidden);
+    }
+    s.active = true;
+    g_tp_drawing = true;
+  }
+}
+
+// After the draw pass: back to first person for the game tick.
+void ge_tp_end() {
+  PPCContext* ctx; uint8_t* base; getcb(ctx, base); (void)ctx;
+  g_tp_drawing = false;
+  for (TpSlot& s : g_tp) {
+    if (!s.active) continue;
+    s.active = false;
+    if (LD32(base, s.player + kTpExternal) == 1) {
+      ST32(base, s.player + kTpExternal, s.saved_external);
+      ST32(base, s.player + kTpRoom, s.saved_room);
+    }
+    if (s.body_synced) {
+      for (uint32_t k = 0; k < 4; ++k) ST32(base, s.player + 0x5B0u + 4u * k, s.saved_pos[k]);
+      for (uint32_t k = 0; k < 3; ++k) ST32(base, s.player + kTpFpEye + 4u * k, s.saved_pos[4 + k]);
+      s.body_synced = false;
+    }
+    if (s.chr) {
+      // Put back the hidden bits as they were; keep any other change the game made.
+      const uint32_t now_flags = LD32(base, s.chr + 0x14u);
+      ST32(base, s.chr + 0x14u, (now_flags & ~kTpChrHidden) | (s.saved_chr_flags & kTpChrHidden));
+      s.chr = 0;
+    }
+  }
+}
+
+// Third person: animate Bond's body with the multiplayer code. In
+// sub_820B4D48 (draws a Bond's body; r24 = player index) single player takes
+// the intro/death path, which moves Bond to his body. Multiplayer takes the
+// path at 0x820B4EBC that animates other players' bodies from their movement
+// (stand/walk/run/strafe, facing, gun in hand) and keeps the body on the player.
+// While third person draws Bond's body, send it down that path: skip to it,
+// report more than one player, and report another viewer.
+static bool tp_anim_on(uint32_t idx) {
+  if (idx >= 4 || !g_tp[idx].active || !g_tp_body[idx]) return false;
+  PPCContext* ctx; uint8_t* base; getcb(ctx, base); (void)ctx;
+  const uint32_t p = LD32(base, 0x82F1FA98u + idx * 4u);
+  return p && LD32(base, p + kTpModel) == g_tp_body[idx];
+}
+bool ge_tp_anim_branch(PPCRegister& r24) { return tp_anim_on(r24.u32); }
+void ge_tp_anim_count(PPCRegister& r3, PPCRegister& r24) {
+  if (tp_anim_on(r24.u32) && r3.s32 < 2) r3.u64 = 2;
+}
+void ge_tp_anim_viewer(PPCRegister& r3, PPCRegister& r24) {
+  if (tp_anim_on(r24.u32) && r3.u32 == r24.u32) r3.u64 = (r24.u32 + 1u) & 3u;
+}
+
+// Third person: log of the body's height (right after the character update in
+// the multiplayer path, 0x820B5630; r21 = prop, r23 = character, r24 = player
+// index). The lift itself is done in the floor lookup below.
+void ge_tp_body_root(PPCRegister& r21, PPCRegister& r23, PPCRegister& r24) {
+  const uint32_t idx = r24.u32;
+  if (!tp_anim_on(idx)) return;
+  PPCContext* ctx; uint8_t* base; getcb(ctx, base);
+  const uint32_t p = LD32(base, 0x82F1FA98u + idx * 4u);
+  const uint32_t prop = r21.u32, model = LD32(base, r23.u32 + 28u);
+  const uint32_t tile = LD32(base, p + 0x5B0u);
+  if (!prop || !model || !ge_readable(base, tile)) return;
+
+  alignas(16) uint8_t saved[sizeof(PPCContext)];
+  std::memcpy(saved, ctx, sizeof(PPCContext));
+  const float feet = LDF32(base, p + 0x174u);
+  const float floor_y = ge_tile_height(ctx, base, tile, LDF32(base, p + 0x5B4u), LDF32(base, p + 0x5BCu));
+  const float lift = feet - floor_y;
+  const float chr_ground = LDF32(base, r23.u32 + 172u);
+  static auto last_log = std::chrono::steady_clock::now() - std::chrono::seconds(10);
+  const auto now = std::chrono::steady_clock::now();
+  if (now - last_log > std::chrono::seconds(2)) {
+    last_log = now;
+    REXKRNL_INFO("GETP body height: feet={:.1f} floor={:.1f} lift={:.1f} chr_ground={:.1f}", feet, floor_y,
+                 lift, chr_ground);
+  }
+  std::memcpy(ctx, saved, sizeof(PPCContext));
+}
+
+// Third person: a climb pose for mantling. The game has no climbing animation,
+// so while a mantle is in progress the body plays the crouch (multiplayer state
+// 5) as it rises with Bond's feet; when he's on top it returns to standing, and
+// the game's own blend between the two makes it read as a pull-up. Hooked where
+// the multiplayer path has picked the movement state (r10, 0x820B5398), before
+// it looks the animation up; f0 is the speed scale (set to normal, f30 = 1).
+void ge_tp_mantle_pose(PPCRegister& r10, PPCRegister& r24, PPCRegister& f0, PPCRegister& f30) {
+  if (!tp_anim_on(r24.u32)) return;
+  const GeMantle& m = g_mantle[r24.u32];
+  if (!m.active) return;
+  r10.u64 = 5;
+  f0.f64 = f30.f64;
+}
+
+// Third person: the body's height. Bodies stand on the level's floor map
+// (that's how multiplayer bodies follow stairs), so on boxes and other objects
+// (mantle, free movement) Bond's body stayed on the floor, inside the box.
+// While the third-person view is drawn, a floor lookup (stanGetPositionYValue,
+// sub_821108B0: r3 = tile, f1 = x, f2 = z, returns f1) at Bond's spot returns
+// his feet height when he's above the floor. Only during the draw: Bond's own
+// movement runs in the game tick and still sees the real floor.
+namespace {
+thread_local uint32_t g_tp_q_tile = 0;
+thread_local float g_tp_q_x = 0.f, g_tp_q_z = 0.f;
+}
+void ge_tp_floor_query(PPCRegister& r3, PPCRegister& f1, PPCRegister& f2) {
+  g_tp_q_tile = r3.u32;
+  g_tp_q_x = static_cast<float>(f1.f64);
+  g_tp_q_z = static_cast<float>(f2.f64);
+}
+void ge_tp_floor_result(PPCRegister& f1) {
+  if (!g_tp_drawing) return;
+  PPCContext* ctx; uint8_t* base; getcb(ctx, base); (void)ctx;
+  for (uint32_t i = 0; i < 4; ++i) {
+    if (!g_tp[i].active || !g_tp_body[i]) continue;
+    const uint32_t p = g_tp[i].player;
+    if (std::fabs(g_tp_q_x - LDF32(base, p + 0x5B4u)) > 2.f ||
+        std::fabs(g_tp_q_z - LDF32(base, p + 0x5BCu)) > 2.f) continue;
+    const float feet = LDF32(base, p + 0x174u);
+    if (std::isfinite(feet) && feet > static_cast<float>(f1.f64) + 0.5f) f1.f64 = feet;
+    return;
+  }
 }

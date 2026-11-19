@@ -109,7 +109,7 @@ uint32_t TiledBlockIndex(uint32_t x, uint32_t y, uint32_t width, uint32_t bpb) {
 }
 
 // ---- DXT ---------------------------------------------------------------------
-enum : uint32_t { kDxt1 = 0x12, kDxt3 = 0x13, kDxt5 = 0x14 };
+enum : uint32_t { kDxt1 = 0x12, kDxt3 = 0x13, kDxt5 = 0x14, kArgb8 = 0x06 };
 
 uint32_t BlockBytes(uint32_t fmt) { return fmt == kDxt1 ? 8 : 16; }
 
@@ -739,11 +739,41 @@ bool ParseCaff(const std::vector<uint8_t>& d, std::vector<TextureInfo>& out) {
 
 bool IsSupported(const TextureInfo& t) {
   const uint32_t f = t.format & 0x3F;
-  return f == kDxt1 || f == kDxt3 || f == kDxt5;
+  return f == kDxt1 || f == kDxt3 || f == kDxt5 || f == kArgb8;
+}
+
+// Uncompressed 32-bit texels (menu pictures): tiled per texel, each stored as
+// big-endian A, R, G, B.
+bool DecodeArgb8(const std::vector<uint8_t>& file, const TextureInfo& t, std::vector<uint8_t>& rgba) {
+  rgba.assign(size_t(t.width) * t.height * 4, 0);
+  for (uint32_t y = 0; y < t.height; y++) {
+    for (uint32_t x = 0; x < t.width; x++) {
+      const size_t at = size_t(TiledBlockIndex(x, y, t.width, 4)) * 4;
+      if (at + 4 > t.data_size) return false;
+      const uint8_t* s = &file[t.data_offset + at];
+      uint8_t* d = &rgba[(size_t(y) * t.width + x) * 4];
+      d[0] = s[1]; d[1] = s[2]; d[2] = s[3]; d[3] = s[0];
+    }
+  }
+  return true;
+}
+bool EncodeArgb8(std::vector<uint8_t>& file, const TextureInfo& t, const std::vector<uint8_t>& rgba) {
+  for (uint32_t y = 0; y < t.height; y++) {
+    for (uint32_t x = 0; x < t.width; x++) {
+      const size_t at = size_t(TiledBlockIndex(x, y, t.width, 4)) * 4;
+      if (at + 4 > t.data_size) return false;
+      const uint8_t* s = &rgba[(size_t(y) * t.width + x) * 4];
+      uint8_t* d = &file[t.data_offset + at];
+      d[0] = s[3]; d[1] = s[0]; d[2] = s[1]; d[3] = s[2];
+    }
+  }
+  file[t.header_offset + 0x30] = 1;
+  return true;
 }
 
 bool Decode(const std::vector<uint8_t>& file, const TextureInfo& t, std::vector<uint8_t>& rgba) {
   if (!IsSupported(t)) return false;
+  if ((t.format & 0x3F) == kArgb8) return DecodeArgb8(file, t, rgba);
   const uint32_t fmt = t.format & 0x3F, bpb = BlockBytes(fmt);
   const uint32_t bw = std::max(1u, (t.width + 3) / 4), bh = std::max(1u, (t.height + 3) / 4);
   rgba.assign(size_t(t.width) * t.height * 4, 0);
@@ -773,6 +803,7 @@ bool Decode(const std::vector<uint8_t>& file, const TextureInfo& t, std::vector<
 
 bool Encode(std::vector<uint8_t>& file, const TextureInfo& t, const std::vector<uint8_t>& rgba) {
   if (!IsSupported(t) || rgba.size() != size_t(t.width) * t.height * 4) return false;
+  if ((t.format & 0x3F) == kArgb8) return EncodeArgb8(file, t, rgba);
   const uint32_t fmt = t.format & 0x3F, bpb = BlockBytes(fmt);
   const uint32_t bw = std::max(1u, (t.width + 3) / 4), bh = std::max(1u, (t.height + 3) / 4);
   for (uint32_t by = 0; by < bh; by++) {

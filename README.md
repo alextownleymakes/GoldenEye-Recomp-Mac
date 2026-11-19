@@ -33,7 +33,7 @@ Everything else (Apple's developer tools, CMake, Ninja) is installed for you the
 
 ## Build (no Terminal needed)
 
-1. **Download this project** with the green **Code → Download ZIP** button on GitHub, and unzip it (double-click the ZIP). Keep the folder somewhere you'll find it again, like Documents.
+1. **Download this project** with the green **Code → Download ZIP** button on GitHub, and unzip it (double-click the ZIP).
 
 2. **Open the `GoldenEye` app** in the project folder (double-click it). The first time, macOS blocks it because it isn't from the App Store or an identified developer. To allow it (once):
 
@@ -48,6 +48,8 @@ Everything else (Apple's developer tools, CMake, Ninja) is installed for you the
    2. Click **Open** in the message that appears.
 
    After that it opens normally with a double-click.
+
+   The first time it opens, it offers to **move itself into Applications** and the rest of the project into `~/Library/Application Support/GoldenEye`. Click **Move**, and the downloaded folder (and the ZIP) can be deleted. From then on, open GoldenEye from Applications or Launchpad. (Click **Keep It Here** instead if you want to keep working in the downloaded folder, for example to change the code.)
 
 3. **If asked, install Apple's developer tools.** The first time, the app asks macOS to install the free *command line developer tools*. Click **Install**, wait for it to finish (usually 5–15 minutes), then open GoldenEye again.
 
@@ -67,7 +69,9 @@ If a build fails, the app shows what went wrong. The full log is in your user fo
 
 The same app is where you play. Click **Play GoldenEye** or **Play GoldenEye 64**: its window steps aside while the game runs and comes back when you quit it, so you can switch versions or rebuild.
 
-The built games are kept inside the GoldenEye app, so keep it in the project folder (that's where updates and rebuilds happen). To start it from the Dock, open it, then right-click its Dock icon and choose **Options → Keep in Dock**.
+The built games are kept in `~/Library/Application Support/GoldenEye/Games`, and the project in `~/Library/Application Support/GoldenEye/Project` (unless you chose to keep it where you downloaded it). To keep GoldenEye in the Dock, open it, then right-click its Dock icon and choose **Options → Keep in Dock**.
+
+Once the games are built they don't need the project folder. **Free Up Space** (bottom right) deletes the build leftovers, several GB; the games stay playable and the next build just takes longer. If the project folder is gone altogether, the app still plays the built games, and offers to download the project again (or locate it) when you want to rebuild or update.
 
 ### N64 version controls
 
@@ -92,7 +96,7 @@ bash macos/build-macos.sh /path/to/your/game/package   # or with the game files 
 bash macos/build-n64.sh "/path/to/GoldenEye 007 (USA).z64"   # or with the ROM in assets/n64/
 ```
 
-Run from Terminal, the scripts put the games in the same place, inside the GoldenEye app (set `GE_APP_DIR` to put them elsewhere).
+Run from Terminal, the scripts put the games in the same place, `~/Library/Application Support/GoldenEye/Games` (set `GE_APP_DIR` to put them elsewhere).
 
 To free up space after building, you can delete `out/` and `macos/.deps/`; the next build just takes longer.
 

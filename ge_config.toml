@@ -399,3 +399,71 @@ address = 0x820EAA28
 name = "ge_dbg_music_flag_set"
 registers = ["r11"]
 after_instruction = true
+
+# THIRD-PERSON CAMERA (mod): sub_82188D50 renders the frame through
+# sub_820AE320 -> sub_8209EC28 (view, characters, gun), after the game tick.
+# ge_tp_begin raises the game's own outside-camera flag (player+0x80) with a
+# camera behind Bond just for that render; ge_tp_end puts first person back
+# before the next tick (see ge_hooks.cpp).
+[[midasm_hook]]
+address = 0x82188DB0
+name = "ge_tp_begin"
+registers = []
+after_instruction = false
+[[midasm_hook]]
+address = 0x82188DB4
+name = "ge_tp_end"
+registers = []
+after_instruction = false
+# THIRD-PERSON BODY ANIMATION (mod): in sub_820B4D48 (draws a Bond's body,
+# r24 = player index), send Bond's third-person body down the multiplayer
+# animation path at 0x820B4EBC instead of the intro/death path (see ge_hooks.cpp).
+[[midasm_hook]]
+address = 0x820B4DAC
+name = "ge_tp_anim_branch"
+registers = ["r24"]
+after_instruction = false
+jump_address_on_true = 0x820B4EBC
+# ...there it requires more than one player (r3 = player count)...
+[[midasm_hook]]
+address = 0x820B4ECC
+name = "ge_tp_anim_count"
+registers = ["r3", "r24"]
+after_instruction = false
+# ...and skips the body of whoever is viewing (r3 = viewer's index).
+[[midasm_hook]]
+address = 0x820B4ED8
+name = "ge_tp_anim_viewer"
+registers = ["r3", "r24"]
+after_instruction = false
+# ...and after the character update, lift the body to Bond's feet (on boxes the
+# update leaves it on the floor map; see ge_hooks.cpp).
+[[midasm_hook]]
+address = 0x820B5630
+name = "ge_tp_body_root"
+registers = ["r21", "r23", "r24"]
+after_instruction = false
+# ...and while mantling, the crouch pose (state 5) as he climbs (see ge_hooks.cpp).
+[[midasm_hook]]
+address = 0x820B5398
+name = "ge_tp_mantle_pose"
+registers = ["r10", "r24", "f0", "f30"]
+after_instruction = false
+# ...and the floor lookup (sub_821108B0) gives Bond's feet height at his spot
+# while the third-person view is drawn, so his body stands on boxes (see
+# ge_hooks.cpp): note the query on entry, adjust the result at both returns.
+[[midasm_hook]]
+address = 0x821108B0
+name = "ge_tp_floor_query"
+registers = ["r3", "f1", "f2"]
+after_instruction = false
+[[midasm_hook]]
+address = 0x82110A30
+name = "ge_tp_floor_result"
+registers = ["f1"]
+after_instruction = false
+[[midasm_hook]]
+address = 0x82110AC0
+name = "ge_tp_floor_result"
+registers = ["f1"]
+after_instruction = false

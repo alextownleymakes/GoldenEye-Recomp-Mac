@@ -22,9 +22,9 @@
 #      GoldenEye changes from macos/rexglue-sdk-goldeneye.patch.
 #   3. Builds and installs the SDK (once; later runs reuse it).
 #   4. Recompiles YOUR copy of the game (assets/default.xex) into C++.
-#   5. Builds the game and puts it inside the GoldenEye app in the project
-#      folder (GoldenEye.app/Contents/Games), which plays it. GE_APP_DIR=dir
-#      puts it somewhere else instead.
+#   5. Builds the game into ~/Library/Application Support/GoldenEye/Games,
+#      where the GoldenEye app plays it. GE_APP_DIR=dir puts it somewhere
+#      else instead.
 #
 # Options (environment variables):
 #   CONFIG=RelWithDebInfo bash macos/build-macos.sh   # Release (default) / RelWithDebInfo / Debug
@@ -342,7 +342,7 @@ APP_SRC="$GAME_BUILD/GoldenEye.app"
 # program + the game files inside it (Contents/Resources/assets). Settings go to
 # ~/Library/Application Support/GoldenEye, logs to ~/Library/Logs/GoldenEye.
 bold "Packaging GoldenEye.app (with game files inside)"
-APP_DIR="${GE_APP_DIR:-$ROOT/GoldenEye.app/Contents/Games}"
+APP_DIR="${GE_APP_DIR:-$HOME/Library/Application Support/GoldenEye/Games}"
 mkdir -p "$APP_DIR"
 APP="$APP_DIR/GoldenEye.app"
 rm -rf "$APP"
@@ -360,6 +360,24 @@ done < <(find "$ROOT/assets" -type f -size +1M 2>/dev/null)
 find "$APP/Contents/Resources/assets" -name .DS_Store -delete
 rm -f "$APP/Contents/Resources/assets/.ge-source"
 rm -rf "$APP/Contents/Resources/assets/n64"  # the N64 ROM belongs to GoldenEye 64.app
+
+# Replacement textures (mod): PNGs in assets/replace are baked into the bundled
+# game files, so they're always on (see macos/ge_texpatch.cpp for the layout).
+# assets/replace and assets/faces are working files, not game files.
+rm -rf "$APP/Contents/Resources/assets/replace" "$APP/Contents/Resources/assets/faces"
+if [[ -d "$ROOT/assets/replace" ]] && [[ -n "$(find "$ROOT/assets/replace" -iname '*.png' -print -quit)" ]]; then
+  bold "Baking replacement textures into the game files"
+  TEXPATCH="$MAC_DIR/.deps/tools/ge_texpatch"
+  tex_sum="$(cat "$MAC_DIR/ge_texpatch.cpp" "$ROOT/src/ge_textures.cpp" "$ROOT/src/ge_textures.h" | shasum -a 256 | awk '{print $1}')"
+  if [[ ! -x "$TEXPATCH" || "$(cat "$TEXPATCH.sha" 2>/dev/null)" != "$tex_sum" ]]; then
+    mkdir -p "$(dirname "$TEXPATCH")"
+    xcrun clang++ -std=c++20 -O2 -DGE_TEXTURES_STANDALONE "$MAC_DIR/ge_texpatch.cpp" \
+      "$ROOT/src/ge_textures.cpp" -o "$TEXPATCH" || die "Couldn't build the texture patcher."
+    printf '%s' "$tex_sum" > "$TEXPATCH.sha"
+  fi
+  "$TEXPATCH" "$ROOT/assets/replace" "$APP/Contents/Resources/assets" \
+    || die "Couldn't bake the replacement textures."
+fi
 assets_mb="$(du -sm "$APP/Contents/Resources/assets" | awk '{print $1}')"
 note "Bundled ${assets_mb} MB of game files"
 

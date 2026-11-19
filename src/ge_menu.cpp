@@ -658,6 +658,31 @@ void GeMenuDialog::DrawContent(ImGuiIO& /*io*/) {
       ImGui::Separator();
       ImGui::Spacing();
 
+      // --- Third-person camera (mod; ge_tp_* in ge_hooks.cpp) ---
+      ImGui::TextColored(ImColor(kTitle), "CAMERA");
+      {
+        bool tp = GetCvarB("ge_third_person");
+        if (ImGui::Checkbox("Third-person view", &tp)) {
+          SetCvarB("ge_third_person", tp);
+          if (callbacks_.persist_config) callbacks_.persist_config();
+        }
+        ImGui::BeginDisabled(!tp);
+        float dist = GetCvarF("ge_tp_distance");
+        if (ImGui::SliderFloat("Camera distance", &dist, 60.0f, 500.0f, "%.0f")) {
+          SetCvarF("ge_tp_distance", dist);
+        }
+        if (ImGui::IsItemDeactivatedAfterEdit() && callbacks_.persist_config) {
+          callbacks_.persist_config();
+        }
+        ImGui::EndDisabled();
+        ImGui::TextColored(ImColor(kInkDim),
+                           "(D-pad down switches it in game; stand still for 5 seconds and the camera circles Bond)");
+      }
+
+      ImGui::Spacing();
+      ImGui::Separator();
+      ImGui::Spacing();
+
       // --- Custom textures (ge_textures.h) ---
       ImGui::TextColored(ImColor(kTitle), "CUSTOM TEXTURES");
       {
