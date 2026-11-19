@@ -384,7 +384,8 @@ struct BitReader {
   }
 };
 
-bool Inflate(const uint8_t* src, size_t n, std::vector<uint8_t>& out) {
+// max_out caps the decompressed size so a crafted stream can't exhaust memory.
+bool Inflate(const uint8_t* src, size_t n, std::vector<uint8_t>& out, size_t max_out) {
   BitReader br{src, n};
   bool last = false;
   while (!last) {
@@ -397,7 +398,7 @@ bool Inflate(const uint8_t* src, size_t n, std::vector<uint8_t>& out) {
       if (br.pos + 4 > n) return false;
       const uint32_t len = src[br.pos] | (src[br.pos + 1] << 8);
       br.pos += 4;
-      if (br.pos + len > n) return false;
+      if (br.pos + len > n || out.size() + len > max_out) return false;
       out.insert(out.end(), src + br.pos, src + br.pos + len);
       br.pos += len;
       continue;
@@ -450,6 +451,7 @@ bool Inflate(const uint8_t* src, size_t n, std::vector<uint8_t>& out) {
       const int sym = br.Decode(lit);
       if (sym < 0) return false;
       if (sym < 256) {
+        if (out.size() >= max_out) return false;
         out.push_back(uint8_t(sym));
       } else if (sym == 256) {
         break;
@@ -460,7 +462,7 @@ bool Inflate(const uint8_t* src, size_t n, std::vector<uint8_t>& out) {
         const int ds = br.Decode(dist);
         if (ds < 0 || ds >= 30) return false;
         const size_t d = kDistBase[ds] + size_t(br.Bits(kDistExtra[ds]));
-        if (br.bad || d > out.size()) return false;
+        if (br.bad || d > out.size() || out.size() + size_t(len) > max_out) return false;
         const size_t from = out.size() - d;
         for (int k = 0; k < len; k++) out.push_back(out[from + size_t(k)]);
       }
@@ -905,6 +907,7 @@ bool ReadPng(const fs::path& path, uint32_t& w, uint32_t& h, std::vector<uint8_t
     if (p + 12 + len > d.size()) return false;
     const uint8_t* body = &d[p + 8];
     if (type == "IHDR") {
+      if (len < 13) return false;
       w = Be32(d, p + 8);
       h = Be32(d, p + 12);
       depth = body[8];
@@ -915,6 +918,7 @@ bool ReadPng(const fs::path& path, uint32_t& w, uint32_t& h, std::vector<uint8_t
     } else if (type == "tRNS") {
       trns.assign(body, body + len);
     } else if (type == "IDAT") {
+      if (idat.size() + len > (64u << 20)) return false;
       idat.insert(idat.end(), body, body + len);
     } else if (type == "IEND") {
       break;
@@ -932,10 +936,10 @@ bool ReadPng(const fs::path& path, uint32_t& w, uint32_t& h, std::vector<uint8_t
     default: return false;
   }
   if (depth != 1 && depth != 2 && depth != 4 && depth != 8 && depth != 16) return false;
-  std::vector<uint8_t> raw;
-  if (!Inflate(idat.data() + 2, idat.size() - 2, raw)) return false;
   const size_t bits_pp = size_t(channels) * size_t(depth);
   const size_t stride = (size_t(w) * bits_pp + 7) / 8;
+  std::vector<uint8_t> raw;
+  if (!Inflate(idat.data() + 2, idat.size() - 2, raw, (stride + 1) * h)) return false;
   const size_t bpp = std::max<size_t>(1, bits_pp / 8);
   if (raw.size() < (stride + 1) * h) return false;
   std::vector<uint8_t> img(stride * h), prev(stride, 0);

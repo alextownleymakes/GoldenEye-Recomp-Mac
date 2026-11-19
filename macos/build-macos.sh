@@ -130,6 +130,17 @@ fi
 TOOLS_DIR="$MAC_DIR/.deps/tools"
 CMAKE_VER_DL="3.31.6"
 NINJA_VER_DL="1.12.1"
+
+# SHA-256 of each download above; a mismatch stops the build before anything runs.
+CMAKE_SHA256="330b9514f5112e5ed4fb08b8b05803b776fd9b539a6ae12927d14dcc0ee2ba8d"
+NINJA_SHA256="89a287444b5b3e98f88a945afa50ce937b8ffd1dcc59c555ad9b1baf855298c9"
+check_sha256() {  # file expected-hash label
+  local got; got="$(shasum -a 256 "$1" | awk '{print $1}')"
+  if [[ "$got" != "$2" ]]; then
+    rm -f "$1"
+    die "The $3 download didn't match its expected checksum, so it wasn't used. Try again later."
+  fi
+}
 for d in "$TOOLS_DIR/cmake/CMake.app/Contents/bin" "$TOOLS_DIR/ninja"; do
   [[ -d "$d" ]] && PATH="$d:$PATH"
 done
@@ -148,6 +159,7 @@ if ! cmake_ok || ! command -v ninja >/dev/null 2>&1; then
     curl -fL --retry 3 -o "$TOOLS_DIR/cmake.tar.gz" \
       "https://github.com/Kitware/CMake/releases/download/v$CMAKE_VER_DL/cmake-$CMAKE_VER_DL-macos-universal.tar.gz" \
       || die "Couldn't download CMake. Check your internet connection and try again."
+    check_sha256 "$TOOLS_DIR/cmake.tar.gz" "$CMAKE_SHA256" CMake
     mkdir -p "$TOOLS_DIR/cmake"
     tar -xzf "$TOOLS_DIR/cmake.tar.gz" -C "$TOOLS_DIR/cmake" --strip-components 1 \
       || die "Couldn't unpack CMake."
@@ -161,6 +173,7 @@ if ! cmake_ok || ! command -v ninja >/dev/null 2>&1; then
     curl -fL --retry 3 -o "$TOOLS_DIR/ninja.zip" \
       "https://github.com/ninja-build/ninja/releases/download/v$NINJA_VER_DL/ninja-mac.zip" \
       || die "Couldn't download Ninja. Check your internet connection and try again."
+    check_sha256 "$TOOLS_DIR/ninja.zip" "$NINJA_SHA256" Ninja
     mkdir -p "$TOOLS_DIR/ninja"
     unzip -q -o "$TOOLS_DIR/ninja.zip" -d "$TOOLS_DIR/ninja" || die "Couldn't unpack Ninja."
     rm -f "$TOOLS_DIR/ninja.zip"
